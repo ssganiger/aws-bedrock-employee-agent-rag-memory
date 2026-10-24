@@ -12,6 +12,7 @@ Project Atlas, its documents, and its tasks are fictional. This is an independen
 4. Lets Nova 2 Lite request a local MCP tool when the user explicitly asks to create a task. Python checks the tool request before execution.
 5. Reads the latest dated Project Atlas status document from S3, selects the earliest due open action, and creates or returns its internal DynamoDB task.
 6. Shows whether the task was newly created or already existed.
+7. Streams question answers and displays per-request latency, TTFT, token throughput, prompt cache usage, and resource counts.
 
 ## Architecture
 
@@ -41,7 +42,7 @@ The question path uses RAG: the Knowledge Base retrieves passages, and Nova 2 Li
 | Bedrock Knowledge Base | Retrieves relevant document passages |
 | Titan Text Embeddings V2 | Embeds document chunks during ingestion |
 | Amazon S3 Vectors | Stores and searches embeddings |
-| Nova 2 Lite through Bedrock Converse | Produces answers and selects the task tool |
+| Nova 2 Lite through Bedrock ConverseStream | Streams answers and selects the task tool |
 | Bedrock prompt caching | Makes a stable input prefix eligible for reuse |
 | Local MCP Python server and client | Exposes the internal task action |
 | Amazon DynamoDB | Stores tasks using duplicate-safe conditional writes |
@@ -110,10 +111,19 @@ Enter these fictional requests in the Streamlit app:
 
 The current task path accepts explicit requests beginning with `create ` or `please create ` and containing `task`. The latest dated status document must contain action IDs, owner teams, and due dates in the format shown in `knowledge/project-atlas-status.md`.
 
+## Performance panel
+
+Each request shows total time, cache reuse, and either **TTFT** for a question or **first tool event** for a task request. TTFT is measured on the local client from the start of the streaming model call to its first nonempty text chunk; it excludes Knowledge Base retrieval. A tool-only model response has no answer TTFT, so the page shows when the tool request first arrived instead. The answer appears incrementally as text arrives.
+
+The approximate output rate divides Bedrock's output-token count by the locally measured time after the first text chunk. This is a learning indicator, not a precise model decoding benchmark. It is shown as N/A for a tool-only response.
+
+The **How this request ran** expander shows retrieval time, local model-call time, Bedrock-reported model latency, optional MCP task time, uncached input tokens, cache-read and cache-write tokens, output tokens, retrieved chunks, distinct source documents, and call counts. Cache reuse is `cache-read tokens / (uncached input + cache-read + cache-write tokens)`. A cache write is not a cache hit; repeat an identical question soon afterward to observe a possible cache read. [AWS documents](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html) the usage fields and cache eligibility rules.
+
 ## What to inspect while learning
 
 - **RAG:** `rag_client.py` calls the Knowledge Base Retrieve API. `agent_client.py` puts the returned passages in the model request. The app displays their S3 source URIs so you can check the model's numbered references.
-- **Prompt caching:** `agent_client.py` places a `cachePoint` after the retrieved context and prints Bedrock usage. Compare `cacheWriteInputTokens` on an eligible first call with `cacheReadInputTokens` on a repeated call. A cache hit is not guaranteed. See [AWS prompt caching documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html).
+- **Prompt caching:** `agent_client.py` places a `cachePoint` after the retrieved context. Compare cache-write tokens on an eligible first call with cache-read tokens on a repeated call in the page's performance expander. A cache hit is not guaranteed. See [AWS prompt caching documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html).
+- **Streaming and TTFT:** `agent_client.py` timestamps the first nonempty `contentBlockDelta` text event from `ConverseStream`. The stream's final metadata supplies token usage and Bedrock latency. See the [Nova streaming guide](https://docs.aws.amazon.com/nova/latest/nova2-userguide/streaming-responses.html).
 - **MCP and actions:** `mcp_server.py` exposes the tools; `mcp_actions_client.py` calls the task tool; `action_workflow.py` parses the latest S3 status; and `actions_client.py` creates or retrieves the DynamoDB task.
 
 ## Cost and cleanup

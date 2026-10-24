@@ -1,3 +1,7 @@
+import json
+from collections.abc import Callable
+from time import perf_counter
+
 import boto3
 
 from answer_client import MODEL_ID
@@ -25,11 +29,18 @@ TOOL_CONFIG = {
 }
 
 
-def run_agent(request: str) -> tuple[str, list[dict], dict | None]:
+def run_agent(
+    request: str,
+    on_text: Callable[[str], None] | None = None,
+) -> tuple[str, list[dict], dict | None, dict]:
     request = request.strip()
     if not request:
         raise ValueError("Enter a Project Atlas request.")
+
+    started = perf_counter()
+    retrieval_started = perf_counter()
     sources = retrieve_sources(request)
+    retrieval_ms = (perf_counter() - retrieval_started) * 1000
     if not sources:
         raise RuntimeError("No Project Atlas sources were retrieved.")
 
@@ -61,40 +72,117 @@ def run_agent(request: str) -> tuple[str, list[dict], dict | None]:
     }]
 
     client = boto3.client("bedrock-runtime", region_name="ap-southeast-2")
-    response = client.converse(
+    model_started = perf_counter()
+    response = client.converse_stream(
         modelId=MODEL_ID,
         system=system_prompt,
         messages=messages,
         toolConfig=TOOL_CONFIG,
         inferenceConfig={"maxTokens": 450, "temperature": 0.1},
     )
-    print("Initial Bedrock usage:", response["usage"])
-    print("Stop reason:", response["stopReason"])
-    print("Model content:", response["output"]["message"]["content"])
-    if response["stopReason"] == "max_tokens":
-        raise RuntimeError("Bedrock stopped before finishing the answer.")
-    if response["stopReason"] == "end_turn":
-        answer = "".join(
-            block["text"]
-            for block in response["output"]["message"]["content"]
-            if "text" in block
-        )
-        return answer, sources, None
-    tool_requests = [
-        block["toolUse"]
-        for block in response["output"]["message"]["content"]
-        if "toolUse" in block
-    ]
+    text_parts = []
+    tool_blocks = {}
+    first_text_ms = None
+    first_tool_event_ms = None
+    stop_reason = None
+    usage = {}
+    service_latency_ms = None
 
-    if response["stopReason"] != "tool_use" or len(tool_requests) != 1:
+    for event in response["stream"]:
+        if "contentBlockStart" in event:
+            block = event["contentBlockStart"]
+            if "toolUse" in block["start"]:
+                tool_blocks[block["contentBlockIndex"]] = {
+                    **block["start"]["toolUse"],
+                    "input_parts": [],
+                }
+                if first_tool_event_ms is None:
+                    first_tool_event_ms = (perf_counter() - model_started) * 1000
+        elif "contentBlockDelta" in event:
+            block = event["contentBlockDelta"]
+            delta = block["delta"]
+            if delta.get("text"):
+                if first_text_ms is None:
+                    first_text_ms = (perf_counter() - model_started) * 1000
+                text_parts.append(delta["text"])
+                if on_text is not None:
+                    on_text("".join(text_parts))
+            if "toolUse" in delta:
+                index = block["contentBlockIndex"]
+                if index not in tool_blocks:
+                    raise RuntimeError("Tool input arrived before the tool start event.")
+                tool_blocks[index]["input_parts"].append(delta["toolUse"]["input"])
+        elif "messageStop" in event:
+            stop_reason = event["messageStop"]["stopReason"]
+        elif "metadata" in event:
+            usage = event["metadata"].get("usage", {})
+            service_latency_ms = event["metadata"].get("metrics", {}).get("latencyMs")
+        elif any(key.endswith("Exception") for key in event):
+            raise RuntimeError(f"Bedrock stream failed: {event}")
+
+    model_ms = (perf_counter() - model_started) * 1000
+    input_tokens = usage.get("inputTokens", 0)
+    cache_read = usage.get("cacheReadInputTokens", 0)
+    cache_write = usage.get("cacheWriteInputTokens", 0)
+    total_input = input_tokens + cache_read + cache_write
+    output_tokens = usage.get("outputTokens", 0)
+    decode_seconds = (
+        (model_ms - first_text_ms) / 1000 if first_text_ms is not None else 0
+    )
+    source_uris = {
+        result["location"]["s3Location"]["uri"] for result in sources
+    }
+    metrics = {
+        "retrieval_ms": round(retrieval_ms),
+        "model_ms": round(model_ms),
+        "model_service_ms": service_latency_ms,
+        "ttft_ms": (
+            round(first_text_ms)
+            if stop_reason == "end_turn" and first_text_ms is not None
+            else None
+        ),
+        "first_tool_event_ms": (
+            round(first_tool_event_ms)
+            if first_tool_event_ms is not None
+            else None
+        ),
+        "tool_ms": None,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
+        "total_input_tokens": total_input,
+        "cache_reuse_pct": round(100 * cache_read / total_input, 1) if total_input else 0.0,
+        "output_tokens_per_second": round(output_tokens / decode_seconds, 1)
+        if stop_reason == "end_turn" and decode_seconds > 0 else None,
+        "retrieved_chunks": len(sources),
+        "source_documents": len(source_uris),
+        "model_calls": 1,
+        "tool_calls": 0,
+        "duplicate_avoided": False,
+    }
+    print("Bedrock usage:", usage)
+    print("Stop reason:", stop_reason)
+
+    if stop_reason == "max_tokens":
+        raise RuntimeError("Bedrock stopped before finishing the answer.")
+    if stop_reason == "end_turn":
+        metrics["total_ms"] = round((perf_counter() - started) * 1000)
+        return "".join(text_parts), sources, None, metrics
+
+    if stop_reason != "tool_use" or len(tool_blocks) != 1:
         raise RuntimeError("Expected exactly one task tool request.")
 
-    tool_request = tool_requests[0]
+    tool_request = next(iter(tool_blocks.values()))
+    try:
+        tool_input = json.loads("".join(tool_request["input_parts"]) or "{}")
+    except json.JSONDecodeError as error:
+        raise RuntimeError("The model returned invalid task tool input.") from error
     if (
         tool_request["name"] != "create_next_project_atlas_task"
-        or tool_request["input"] != {}
+        or tool_input != {}
     ):
-        raise RuntimeError(f"Unexpected tool request: {tool_request}")
+        raise RuntimeError("Unexpected task tool request.")
 
     normalized_request = " ".join(request.lower().split())
     if not (
@@ -102,7 +190,11 @@ def run_agent(request: str) -> tuple[str, list[dict], dict | None]:
         and "task" in normalized_request
     ):
         raise RuntimeError("Task creation requires an explicit create-task request.")
+    tool_started = perf_counter()
     task_result = create_next_task_via_mcp()
+    metrics["tool_ms"] = round((perf_counter() - tool_started) * 1000)
+    metrics["tool_calls"] = 1
+    metrics["duplicate_avoided"] = not task_result["created"]
     print("MCP result:", task_result)
 
     if task_result["created"]:
@@ -110,4 +202,5 @@ def run_agent(request: str) -> tuple[str, list[dict], dict | None]:
     else:
         outcome = "The internal task already existed; no duplicate was created."
 
-    return outcome, sources, task_result
+    metrics["total_ms"] = round((perf_counter() - started) * 1000)
+    return outcome, sources, task_result, metrics
