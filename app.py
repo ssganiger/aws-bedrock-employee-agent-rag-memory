@@ -1,61 +1,41 @@
 import streamlit as st
 
-from bedrock_client import extract_role_facts, generate_recommendations
-from storage import save_launch_record, save_needs_information_record
-from workflow import (
-    assess_readiness,
-    build_clarification_questions,
-    build_role_spec,
-    validate_launch_pack,
-)
+from agent_client import run_agent
 
-st.set_page_config(page_title="Role Intake and Search Launch")
-st.title("Role Intake and Search Launch")
-st.write("Turn a rough hiring request into a structured search plan.")
 
-brief = st.text_area("Describe the role", height=180)
+st.set_page_config(page_title="Project Atlas Employee Assistant")
+st.title("Project Atlas Employee Assistant")
+st.write("Ask about the fictional pilot or request an internal follow-up task.")
 
-if st.button("Start intake"):
-    if not brief.strip():
-        st.warning("Please describe the role first.")
+with st.form("assistant_request"):
+    request = st.text_area("Your request", height=100)
+    submitted = st.form_submit_button("Send")
+
+if submitted:
+    if not request.strip():
+        st.warning("Enter a question or task request first.")
     else:
-        with st.spinner("Analyzing the role brief with Bedrock..."):
-            facts = extract_role_facts(brief)
+        with st.spinner("Checking Project Atlas documents..."):
+            answer, sources, task_result = run_agent(request)
 
-        decision = assess_readiness(facts)
+        st.subheader("Response")
+        st.markdown(answer)
 
-        st.subheader("Extracted role facts")
-        st.json(facts)
-
-        st.subheader("Intake decision")
-        if decision["status"] == "Ready to launch":
-            with st.spinner("Creating the search launch pack..."):
-                recommendations = generate_recommendations(facts)
-                launch_pack = build_role_spec(facts) + "\n\n" + recommendations
-
-            problems = validate_launch_pack(launch_pack)
-
-            if problems:
-                st.error("Search launch blocked: the pack did not pass validation.")
-                for problem in problems:
-                    st.write("- " + problem)
-                st.subheader("Draft launch pack")
-                st.markdown(launch_pack)
+        if task_result is not None:
+            task = task_result["task"]
+            st.subheader("Internal task")
+            if task_result["created"]:
+                st.success("New task created.")
             else:
-                run_dir = save_launch_record(brief, facts, launch_pack)
-                st.success(f"Launched internally. Run ID: {run_dir.name}")
-                st.caption("A search kickoff record was created; no candidates were contacted.")
-                st.subheader("Search launch pack")
-                st.markdown(launch_pack)
-        else:
-            questions = build_clarification_questions(
-                decision["missing_information"]
-            )
-            run_dir = save_needs_information_record(brief, facts)
+                st.info("Existing task returned; no duplicate was created.")
 
-            st.warning("Needs information before search launch.")
-            st.write("Missing:", ", ".join(decision["missing_information"]))
-            st.subheader("Questions for the hiring manager")
-            for question in questions:
-                st.markdown(f"- {question}")
-            st.caption(f"Clarification request saved. Run ID: {run_dir.name}")
+            st.write(f"**Task:** {task['title']}")
+            st.write(f"**Owner:** {task['owner_team']}")
+            st.write(f"**Due date:** {task['due_date']}")
+            st.write(f"**State:** {task['state']}")
+            st.caption(f"Source: {task['source_uri']}")
+
+        st.subheader("Sources")
+        for number, result in enumerate(sources, start=1):
+            uri = result["location"]["s3Location"]["uri"]
+            st.caption(f"[{number}] {uri}")

@@ -4,5 +4,4 @@ __pycache__/
 .env
 .streamlit/secrets.toml
 .DS_Store
-runs/
 AGENTS.md
