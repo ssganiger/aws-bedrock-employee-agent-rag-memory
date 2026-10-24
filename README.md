@@ -4,6 +4,19 @@ A fictional employee assistant that answers questions about a project pilot and 
 
 Project Atlas, its documents, and its tasks are fictional. This is an independent portfolio project.
 
+## What you'll learn
+
+By building and running this project, you'll learn how to:
+
+1. **Build a RAG workflow:** Store project documents in S3, index them in a Bedrock Knowledge Base backed by S3 Vectors, retrieve relevant passages, and use them to answer questions with source references.
+2. **Understand embeddings and retrieval:** See how Titan Text Embeddings V2 turns document chunks into vectors and how retrieval supplies context to Nova 2 Lite.
+3. **Observe prompt caching:** Add a cache checkpoint to a Bedrock request, then compare cache-write and cache-read tokens across repeated questions.
+4. **Connect an AI model to a business action:** Let the model request an MCP tool, validate that request in Python, and create an internal follow-up task only when the user asks for one.
+5. **Make actions safe to retry:** Read the latest status from S3 and use a conditional DynamoDB write so repeated requests return the existing task instead of creating duplicates.
+6. **Measure the user experience and resource use:** Inspect total latency, time to first answer text (TTFT), approximate output rate, token usage, cache reuse, retrieval time, and tool time in the Streamlit app.
+
+The end result is a small employee assistant that answers from project documents and takes one controlled action. The **Try the demo** and **What to inspect while learning** sections below give you requests to run and code paths to explore.
+
 ## What the app does
 
 1. Retrieves relevant Project Atlas passages from an Amazon Bedrock Knowledge Base backed by Amazon S3 Vectors.
