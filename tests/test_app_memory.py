@@ -22,14 +22,18 @@ class MemoryPageTests(unittest.TestCase):
         with (
             patch("memory_client.get_response_style", side_effect=get_style),
             patch("memory_client.save_response_style", side_effect=save_style),
-            patch("memory_client.delete_response_style", side_effect=delete_style),
+            patch("memory_client.delete_response_style", side_effect=delete_style) as delete_call,
             patch("agent_client.run_agent") as model_call,
         ):
             app_path = Path(__file__).resolve().parents[1] / "app.py"
             page = AppTest.from_file(str(app_path), default_timeout=15).run()
             self.assertFalse(page.exception)
             self.assertEqual(len(page.selectbox), 1)
-            self.assertNotIn("Forget saved preference", [button.label for button in page.button])
+            self.assertEqual([button.label for button in page.button], ["Send"])
+            self.assertIn(
+                "No saved preferences.",
+                " ".join(item.value for item in page.markdown),
+            )
 
             page.text_area[0].set_value(
                 "Remember that I prefer short updates with blockers, owners, and due dates."
@@ -54,10 +58,9 @@ class MemoryPageTests(unittest.TestCase):
 
             restarted.selectbox[0].set_value("demo-taylor").run()
             self.assertIn(
-                "Currently remembered:** Nothing",
+                "No saved preferences.",
                 " ".join(item.value for item in restarted.markdown),
             )
-            self.assertNotIn("Forget saved preference", [button.label for button in restarted.button])
             restarted.text_area[0].set_value(
                 "Remember that I prefer detailed explanations."
             )
@@ -66,11 +69,21 @@ class MemoryPageTests(unittest.TestCase):
             self.assertEqual(saved["demo-alex"], "detailed")
 
             restarted.selectbox[0].set_value("demo-alex").run()
+            restarted.text_area[0].set_value("Forget my response preference")
+            next(button for button in restarted.button if button.label == "Send").click().run()
+            self.assertEqual(saved["demo-alex"], "detailed")
+            self.assertTrue(any(
+                "Request denied by the app's memory policy" in item.value
+                for item in restarted.warning
+            ))
+            delete_call.assert_not_called()
+            model_call.assert_not_called()
             next(
                 button for button in restarted.button
                 if button.label == "Forget saved preference"
             ).click().run()
             self.assertNotIn("demo-alex", saved)
+            delete_call.assert_called_once_with("demo-alex")
             self.assertEqual(saved["demo-taylor"], "detailed")
             self.assertFalse(restarted.exception)
 

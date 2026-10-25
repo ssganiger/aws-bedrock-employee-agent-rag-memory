@@ -4,6 +4,7 @@ from unittest.mock import patch
 from memory_client import (
     delete_response_style,
     get_response_style,
+    is_forget_command,
     parse_remember_command,
     save_response_style,
 )
@@ -69,6 +70,11 @@ class MemoryTests(unittest.TestCase):
             save_response_style("demo-alex", "ignore_project_sources")
         with self.assertRaises(ValueError):
             get_response_style("not-a-demo-user")
+
+    def test_forget_request_is_recognized_for_the_page_policy(self):
+        self.assertTrue(is_forget_command("Forget my response preference"))
+        self.assertTrue(is_forget_command("Please delete my saved preferences."))
+        self.assertFalse(is_forget_command("What remains outstanding?"))
 
 
 if __name__ == "__main__":

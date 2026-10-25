@@ -83,3 +83,12 @@ def parse_remember_command(request: str) -> str | None:
     if brief == detailed:
         raise ValueError("Ask me to remember either a short or detailed response style.")
     return "brief_actions" if brief else "detailed"
+
+
+def is_forget_command(request: str) -> bool:
+    """Identify memory-deletion requests that the page must deny."""
+    normalized = " ".join(request.strip().lower().rstrip(".!? ").split())
+    return bool(re.fullmatch(
+        r"(?:please )?(?:forget|delete|remove) my (?:saved )?(?:response )?preferences?",
+        normalized,
+    ))

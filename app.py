@@ -7,6 +7,7 @@ from memory_client import (
     STYLES,
     delete_response_style,
     get_response_style,
+    is_forget_command,
     parse_remember_command,
     save_response_style,
 )
@@ -94,10 +95,13 @@ except Exception as error:
     st.error(f"Personal memory is unavailable: {error}")
     st.stop()
 
-st.subheader("Personal memory")
+st.subheader(f"Saved preferences for {DEMO_USERS[user_id]}")
 if st.session_state.get("memory_notice"):
     st.success(st.session_state.pop("memory_notice"))
-st.write(f"**Currently remembered:** {STYLES[current_style] if current_style else 'Nothing'}")
+if current_style:
+    st.write(f"- **Response style:** {STYLES[current_style]}")
+else:
+    st.write("No saved preferences.")
 st.caption("The saved style changes answer format only. Project facts still come from source documents.")
 if current_style and st.button("Forget saved preference"):
     try:
@@ -112,7 +116,8 @@ with st.form("assistant_request"):
     submitted = st.form_submit_button("Send")
 st.caption(
     "To save a style, type 'Remember that I prefer short updates' or "
-    "'Remember that I prefer detailed explanations' above."
+    "'Remember that I prefer detailed explanations' above. "
+    "To remove a saved style, use the Forget button above."
 )
 
 if submitted:
@@ -120,46 +125,53 @@ if submitted:
         st.warning("Enter a question or task request first.")
     else:
         try:
-            remember_style = parse_remember_command(request)
-            if remember_style is not None:
-                save_response_style(user_id, remember_style)
-                st.session_state["memory_notice"] = (
-                    f"Remembered for {DEMO_USERS[user_id]}: {STYLES[remember_style]}"
-                )
-                st.rerun()
-            elif request.strip().lower().rstrip("?. ") in {
-                "what do you remember about me", "show my memory"
-            }:
-                st.info(
-                    f"I remember your response preference: {STYLES[current_style]}"
-                    if current_style else "I have no saved response preference for you."
+            if is_forget_command(request):
+                st.warning(
+                    "Request denied by the app's memory policy: saved preferences "
+                    "cannot be deleted by a text request. Use Forget saved "
+                    "preference above to delete the saved style."
                 )
             else:
-                st.subheader("Response")
-                response_area = st.empty()
-                with st.spinner("Checking Project Atlas documents..."):
-                    answer, sources, task_result, metrics = run_agent(
-                        request, on_text=response_area.markdown, user_id=user_id
+                remember_style = parse_remember_command(request)
+                if remember_style is not None:
+                    save_response_style(user_id, remember_style)
+                    st.session_state["memory_notice"] = (
+                        f"Remembered for {DEMO_USERS[user_id]}: {STYLES[remember_style]}"
                     )
-                response_area.markdown(answer)
+                    st.rerun()
+                elif request.strip().lower().rstrip("?. ") in {
+                    "what do you remember about me", "show my memory"
+                }:
+                    st.info(
+                        f"I remember your response preference: {STYLES[current_style]}"
+                        if current_style else "I have no saved response preference for you."
+                    )
+                else:
+                    st.subheader("Response")
+                    response_area = st.empty()
+                    with st.spinner("Checking Project Atlas documents..."):
+                        answer, sources, task_result, metrics = run_agent(
+                            request, on_text=response_area.markdown, user_id=user_id
+                        )
+                    response_area.markdown(answer)
 
-                if task_result is not None:
-                    task = task_result["task"]
-                    st.subheader("Internal task")
-                    if task_result["created"]:
-                        st.success("New task created.")
-                    else:
-                        st.info("Existing task returned; no duplicate was created.")
-                    st.write(f"**Task:** {task['title']}")
-                    st.write(f"**Owner:** {task['owner_team']}")
-                    st.write(f"**Due date:** {task['due_date']}")
-                    st.write(f"**State:** {task['state']}")
-                    st.caption(f"Source: {task['source_uri']}")
+                    if task_result is not None:
+                        task = task_result["task"]
+                        st.subheader("Internal task")
+                        if task_result["created"]:
+                            st.success("New task created.")
+                        else:
+                            st.info("Existing task returned; no duplicate was created.")
+                        st.write(f"**Task:** {task['title']}")
+                        st.write(f"**Owner:** {task['owner_team']}")
+                        st.write(f"**Due date:** {task['due_date']}")
+                        st.write(f"**State:** {task['state']}")
+                        st.caption(f"Source: {task['source_uri']}")
 
-                show_performance(metrics, task_result)
-                st.subheader("Sources")
-                for number, result in enumerate(sources, start=1):
-                    uri = result["location"]["s3Location"]["uri"]
-                    st.caption(f"[{number}] {uri}")
+                    show_performance(metrics, task_result)
+                    st.subheader("Sources")
+                    for number, result in enumerate(sources, start=1):
+                        uri = result["location"]["s3Location"]["uri"]
+                        st.caption(f"[{number}] {uri}")
         except (BotoCoreError, ClientError, RuntimeError, ValueError) as error:
             st.error(str(error))
