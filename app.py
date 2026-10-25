@@ -97,43 +97,23 @@ except Exception as error:
 st.subheader("Personal memory")
 if st.session_state.get("memory_notice"):
     st.success(st.session_state.pop("memory_notice"))
-pending_style = st.session_state.pop("memory_style_to_select", None)
-if pending_style is not None:
-    st.session_state[f"style-{user_id}"] = pending_style
-style_key = f"style-{user_id}"
-style_default = (
-    {"index": list(STYLES).index(current_style) if current_style else 0}
-    if style_key not in st.session_state else {}
-)
-with st.form("memory_controls"):
-    selected_style = st.selectbox(
-        "Response preference",
-        options=list(STYLES),
-        format_func=lambda value: STYLES[value],
-        key=style_key,
-        **style_default,
-    )
-    save_memory = st.form_submit_button("Save preference")
-    forget_memory = st.form_submit_button("Forget preference")
-
-try:
-    if save_memory:
-        save_response_style(user_id, selected_style)
-        current_style = selected_style
-        st.success("Preference saved for this demo user.")
-    elif forget_memory:
-        deleted = delete_response_style(user_id)
-        current_style = None
-        st.info("Preference forgotten." if deleted else "No preference was saved.")
-except (BotoCoreError, ClientError) as error:
-    st.error(f"Could not update personal memory: {error}")
-
 st.write(f"**Currently remembered:** {STYLES[current_style] if current_style else 'Nothing'}")
-st.caption("This memory affects answer format only. Project facts still come from source documents.")
+st.caption("The saved style changes answer format only. Project facts still come from source documents.")
+if current_style and st.button("Forget saved preference"):
+    try:
+        delete_response_style(user_id)
+        st.session_state["memory_notice"] = f"Forgot the saved preference for {DEMO_USERS[user_id]}."
+        st.rerun()
+    except (BotoCoreError, ClientError) as error:
+        st.error(f"Could not forget personal memory: {error}")
 
 with st.form("assistant_request"):
     request = st.text_area("Your request", height=100)
     submitted = st.form_submit_button("Send")
+st.caption(
+    "To save a style, type 'Remember that I prefer short updates' or "
+    "'Remember that I prefer detailed explanations' above."
+)
 
 if submitted:
     if not request.strip():
@@ -143,7 +123,6 @@ if submitted:
             remember_style = parse_remember_command(request)
             if remember_style is not None:
                 save_response_style(user_id, remember_style)
-                st.session_state["memory_style_to_select"] = remember_style
                 st.session_state["memory_notice"] = (
                     f"Remembered for {DEMO_USERS[user_id]}: {STYLES[remember_style]}"
                 )

@@ -28,11 +28,13 @@ class MemoryPageTests(unittest.TestCase):
             app_path = Path(__file__).resolve().parents[1] / "app.py"
             page = AppTest.from_file(str(app_path), default_timeout=15).run()
             self.assertFalse(page.exception)
+            self.assertEqual(len(page.selectbox), 1)
+            self.assertNotIn("Forget saved preference", [button.label for button in page.button])
 
             page.text_area[0].set_value(
                 "Remember that I prefer short updates with blockers, owners, and due dates."
             )
-            page.button[2].click().run()
+            next(button for button in page.button if button.label == "Send").click().run()
             self.assertEqual(saved["demo-alex"], "brief_actions")
             self.assertFalse(page.exception)
             model_call.assert_not_called()
@@ -47,22 +49,27 @@ class MemoryPageTests(unittest.TestCase):
             restarted.text_area[0].set_value(
                 "Remember that I prefer detailed explanations."
             )
-            restarted.button[2].click().run()
+            next(button for button in restarted.button if button.label == "Send").click().run()
             self.assertEqual(saved["demo-alex"], "detailed")
-            self.assertEqual(restarted.selectbox[1].value, "detailed")
 
             restarted.selectbox[0].set_value("demo-taylor").run()
             self.assertIn(
                 "Currently remembered:** Nothing",
                 " ".join(item.value for item in restarted.markdown),
             )
-            restarted.selectbox[1].set_value("detailed")
-            restarted.button[0].click().run()
+            self.assertNotIn("Forget saved preference", [button.label for button in restarted.button])
+            restarted.text_area[0].set_value(
+                "Remember that I prefer detailed explanations."
+            )
+            next(button for button in restarted.button if button.label == "Send").click().run()
             self.assertEqual(saved["demo-taylor"], "detailed")
             self.assertEqual(saved["demo-alex"], "detailed")
 
             restarted.selectbox[0].set_value("demo-alex").run()
-            restarted.button[1].click().run()
+            next(
+                button for button in restarted.button
+                if button.label == "Forget saved preference"
+            ).click().run()
             self.assertNotIn("demo-alex", saved)
             self.assertEqual(saved["demo-taylor"], "detailed")
             self.assertFalse(restarted.exception)
