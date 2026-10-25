@@ -95,30 +95,32 @@ except Exception as error:
     st.error(f"Personal memory is unavailable: {error}")
     st.stop()
 
-st.subheader(f"Saved preferences for {DEMO_USERS[user_id]}")
-if st.session_state.get("memory_notice"):
-    st.success(st.session_state.pop("memory_notice"))
-if current_style:
-    st.write(f"- **Response style:** {STYLES[current_style]}")
-else:
-    st.write("No saved preferences.")
-st.caption("The saved style changes answer format only. Project facts still come from source documents.")
-if current_style and st.button("Forget saved preference"):
-    try:
-        delete_response_style(user_id)
-        st.session_state["memory_notice"] = f"Forgot the saved preference for {DEMO_USERS[user_id]}."
-        st.rerun()
-    except (BotoCoreError, ClientError) as error:
-        st.error(f"Could not forget personal memory: {error}")
-
 with st.form("assistant_request"):
     request = st.text_area("Your request", height=100)
     submitted = st.form_submit_button("Send")
 st.caption(
     "To save a style, type 'Remember that I prefer short updates' or "
     "'Remember that I prefer detailed explanations' above. "
-    "To remove a saved style, use the Forget button above."
+    "To remove a saved style, use the Forget button below when it appears."
 )
+if st.session_state.get("memory_notice"):
+    st.success(st.session_state.pop("memory_notice"))
+if current_style:
+    st.subheader(f"Saved preferences for {DEMO_USERS[user_id]}")
+    st.write(f"- **Response style:** {STYLES[current_style]}")
+    st.caption(
+        "The saved style changes answer format only. "
+        "Project facts still come from source documents."
+    )
+    if st.button("Forget saved preference"):
+        try:
+            delete_response_style(user_id)
+            st.session_state["memory_notice"] = (
+                f"Forgot the saved preference for {DEMO_USERS[user_id]}."
+            )
+            st.rerun()
+        except (BotoCoreError, ClientError) as error:
+            st.error(f"Could not forget personal memory: {error}")
 
 if submitted:
     if not request.strip():
@@ -129,7 +131,7 @@ if submitted:
                 st.warning(
                     "Request denied by the app's memory policy: saved preferences "
                     "cannot be deleted by a text request. Use Forget saved "
-                    "preference above to delete the saved style."
+                    "preference below to delete the saved style."
                 )
             else:
                 remember_style = parse_remember_command(request)

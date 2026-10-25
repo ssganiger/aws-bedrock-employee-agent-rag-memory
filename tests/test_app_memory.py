@@ -30,10 +30,7 @@ class MemoryPageTests(unittest.TestCase):
             self.assertFalse(page.exception)
             self.assertEqual(len(page.selectbox), 1)
             self.assertEqual([button.label for button in page.button], ["Send"])
-            self.assertIn(
-                "No saved preferences.",
-                " ".join(item.value for item in page.markdown),
-            )
+            self.assertEqual(len(page.subheader), 0)
 
             page.text_area[0].set_value(
                 "Remember that I prefer short updates with blockers, owners, and due dates."
@@ -45,6 +42,10 @@ class MemoryPageTests(unittest.TestCase):
 
             restarted = AppTest.from_file(str(app_path), default_timeout=15).run()
             self.assertFalse(restarted.exception)
+            self.assertEqual(
+                restarted.subheader[0].value,
+                "Saved preferences for Alex Morgan",
+            )
             self.assertIn(
                 "Brief bullets with blockers, owners, and due dates",
                 " ".join(item.value for item in restarted.markdown),
@@ -57,10 +58,7 @@ class MemoryPageTests(unittest.TestCase):
             self.assertEqual(saved["demo-alex"], "detailed")
 
             restarted.selectbox[0].set_value("demo-taylor").run()
-            self.assertIn(
-                "No saved preferences.",
-                " ".join(item.value for item in restarted.markdown),
-            )
+            self.assertEqual(len(restarted.subheader), 0)
             restarted.text_area[0].set_value(
                 "Remember that I prefer detailed explanations."
             )
@@ -85,6 +83,7 @@ class MemoryPageTests(unittest.TestCase):
             self.assertNotIn("demo-alex", saved)
             delete_call.assert_called_once_with("demo-alex")
             self.assertEqual(saved["demo-taylor"], "detailed")
+            self.assertEqual(len(restarted.subheader), 0)
             self.assertFalse(restarted.exception)
 
 
