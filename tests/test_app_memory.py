@@ -19,6 +19,12 @@ class MemoryPageTests(unittest.TestCase):
             "memory_loaded": True,
             "response_format": "Brief action bullets (saved preference)",
             "duplicate_avoided": False,
+            "trace": {
+                "memory_style": "brief_actions",
+                "model_request": {"messages": [{"role": "user", "content": [{"text": "test prompt"}]}]},
+                "stop_reason": "end_turn",
+                "model_text": "- IT: test sign-in [1].",
+            },
         }
         sources = [{
             "location": {"s3Location": {"uri": "s3://example/status.md"}}
@@ -45,6 +51,9 @@ class MemoryPageTests(unittest.TestCase):
         self.assertIn("Knowledge Base", text)
         self.assertIn("Prompt cache hit: reused 75 input tokens", text)
         self.assertIn("Brief action bullets (saved preference)", text)
+        self.assertEqual(
+            len([item for item in page.expander if item.label.startswith("Step ")]), 5
+        )
 
         del metrics["response_format"]
         with (
@@ -99,6 +108,7 @@ class MemoryPageTests(unittest.TestCase):
             self.assertEqual(saved["demo-alex"], "brief_actions")
             self.assertFalse(page.exception)
             self.assertEqual(page.subheader[0].value, "What internally happened")
+            self.assertEqual(len(page.expander), 3)
             self.assertIn(
                 "Saved Brief bullets with blockers, owners, and due dates",
                 " ".join(item.value for item in page.markdown),

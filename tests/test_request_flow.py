@@ -1,6 +1,6 @@
 import unittest
 
-from request_flow import model_flow_steps
+from request_flow import model_flow_details, model_flow_steps
 
 
 class RequestFlowTests(unittest.TestCase):
@@ -54,6 +54,41 @@ class RequestFlowTests(unittest.TestCase):
         self.assertIn("S3", steps[5])
         self.assertIn("DynamoDB", steps[5])
         self.assertIn("no duplicate", steps[6])
+
+    def test_details_show_actual_passages_prompt_and_server_cache_counts(self):
+        self.metrics.update({
+            "input_tokens": 12,
+            "cache_reuse_pct": 99.5,
+            "trace": {
+                "memory_style": "brief_actions",
+                "model_request": {"messages": [{"content": [
+                    {"text": "source"}, {"cachePoint": {"type": "default"}}
+                ]}]},
+                "stop_reason": "end_turn",
+                "model_text": "- IT action [1].",
+            },
+        })
+        sources = [{
+            "location": {"s3Location": {"uri": "s3://example/status.md"}},
+            "content": {"text": "The status document says IT has an open action."},
+            "score": 0.91,
+        }]
+
+        details = model_flow_details(
+            "demo-alex", "What remains open?", self.metrics, sources, None
+        )
+
+        self.assertEqual(len(details), 5)
+        self.assertEqual(details[0]["saved_style"], "brief_actions")
+        self.assertEqual(
+            details[1]["retrieved_passages"][0]["text"], sources[0]["content"]["text"]
+        )
+        self.assertEqual(
+            details[2]["ConverseStream_request"], self.metrics["trace"]["model_request"]
+        )
+        self.assertEqual(details[3]["cache_read_input_tokens"], 2434)
+        self.assertEqual(details[3]["cache_checkpoints_sent"], [{"type": "default"}])
+        self.assertEqual(details[4]["model_text"], "- IT action [1].")
 
 
 if __name__ == "__main__":

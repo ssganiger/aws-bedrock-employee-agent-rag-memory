@@ -62,6 +62,11 @@ class AgentMetricsTests(unittest.TestCase):
         self.assertEqual(metrics["response_format"], "Default prose (no saved preference)")
         content = boto_client.return_value.converse_stream.call_args.kwargs["messages"][0]["content"]
         self.assertIn("two short prose paragraphs", content[2]["text"])
+        self.assertEqual(
+            metrics["trace"]["model_request"],
+            boto_client.return_value.converse_stream.call_args.kwargs,
+        )
+        self.assertEqual(metrics["trace"]["model_text"], answer)
         create_task.assert_not_called()
 
     @patch("agent_client.boto3.client")
@@ -132,6 +137,11 @@ class AgentMetricsTests(unittest.TestCase):
         self.assertIsNone(metrics["output_tokens_per_second"])
         self.assertEqual(metrics["tool_calls"], 1)
         self.assertTrue(metrics["duplicate_avoided"])
+        self.assertEqual(
+            metrics["trace"]["tool_request"],
+            {"name": "create_next_project_atlas_task", "input": {}},
+        )
+        self.assertEqual(metrics["trace"]["tool_result"], task)
         create_task.assert_called_once_with()
 
     @patch("agent_client.create_next_task_via_mcp")

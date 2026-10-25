@@ -108,15 +108,16 @@ def run_agent(
         ],
     }]
 
+    model_request = {
+        "modelId": MODEL_ID,
+        "system": system_prompt,
+        "messages": messages,
+        "toolConfig": TOOL_CONFIG,
+        "inferenceConfig": {"maxTokens": 450, "temperature": 0.1},
+    }
     client = boto3.client("bedrock-runtime", region_name="ap-southeast-2")
     model_started = perf_counter()
-    response = client.converse_stream(
-        modelId=MODEL_ID,
-        system=system_prompt,
-        messages=messages,
-        toolConfig=TOOL_CONFIG,
-        inferenceConfig={"maxTokens": 450, "temperature": 0.1},
-    )
+    response = client.converse_stream(**model_request)
     text_parts = []
     tool_blocks = {}
     first_text_ms = None
@@ -200,6 +201,12 @@ def run_agent(
         "model_calls": 1,
         "tool_calls": 0,
         "duplicate_avoided": False,
+        "trace": {
+            "memory_style": response_style,
+            "model_request": model_request,
+            "stop_reason": stop_reason,
+            "model_text": "".join(text_parts),
+        },
     }
     print("Bedrock usage:", usage)
     print("Stop reason:", stop_reason)
@@ -223,6 +230,10 @@ def run_agent(
         or tool_input != {}
     ):
         raise RuntimeError("Unexpected task tool request.")
+    metrics["trace"]["tool_request"] = {
+        "name": tool_request["name"],
+        "input": tool_input,
+    }
 
     normalized_request = " ".join(request.lower().split())
     if not (
@@ -235,6 +246,7 @@ def run_agent(
     metrics["tool_ms"] = round((perf_counter() - tool_started) * 1000)
     metrics["tool_calls"] = 1
     metrics["duplicate_avoided"] = not task_result["created"]
+    metrics["trace"]["tool_result"] = task_result
     print("MCP result:", task_result)
 
     if task_result["created"]:

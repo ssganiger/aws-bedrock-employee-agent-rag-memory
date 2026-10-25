@@ -11,13 +11,19 @@ from memory_client import (
     parse_remember_command,
     save_response_style,
 )
-from request_flow import model_flow_steps
+from request_flow import model_flow_details, model_flow_steps
 
 
-def show_request_flow(steps: list[str]) -> None:
+def show_request_flow(
+    steps: list[str], details: list[dict | None] | None = None
+) -> None:
     st.subheader("What internally happened")
-    for step in steps:
+    for number, step in enumerate(steps, start=1):
         st.markdown(f"- {step}")
+        detail = details[number - 1] if details and number <= len(details) else None
+        if detail is not None:
+            with st.expander(f"Step {number} details"):
+                st.json(detail)
 
 
 def show_performance(metrics: dict, task_result: dict | None) -> None:
@@ -121,8 +127,9 @@ st.caption(
 if st.session_state.get("memory_notice"):
     notice = st.session_state.pop("memory_notice")
     flow = st.session_state.pop("memory_notice_flow", None)
+    details = st.session_state.pop("memory_notice_details", None)
     if flow:
-        show_request_flow(flow)
+        show_request_flow(flow, details)
     st.success(notice)
 if current_style:
     st.subheader(f"Saved preferences for {DEMO_USERS[user_id]}")
@@ -146,6 +153,9 @@ if submitted:
         show_request_flow([
             f"Checked {DEMO_USERS[user_id]}'s saved preference in DynamoDB.",
             "The request was empty, so no Knowledge Base retrieval or model call followed.",
+        ], [
+            {"user_id": user_id, "saved_style": current_style},
+            {"request_text": request},
         ])
         st.warning("Enter a question or task request first.")
     else:
@@ -157,6 +167,11 @@ if submitted:
                     "Recognized a request to delete personal memory.",
                     "Applied the app rule: text requests cannot delete saved preferences.",
                     "Stopped before Knowledge Base retrieval, Bedrock, or a DynamoDB deletion.",
+                ], [
+                    {"user_id": user_id, "saved_style": current_style},
+                    {"request_text": request},
+                    {"decision": "Denied; only the Forget saved preference button can delete."},
+                    None,
                 ])
                 st.warning(
                     "Request denied by the app's memory policy: saved preferences "
@@ -166,12 +181,18 @@ if submitted:
             else:
                 remember_style = parse_remember_command(request)
                 if remember_style is not None:
-                    save_response_style(user_id, remember_style)
+                    saved_item = save_response_style(user_id, remember_style)
                     st.session_state["memory_notice_flow"] = [
                         f"Checked {DEMO_USERS[user_id]}'s saved preference in DynamoDB.",
                         "Recognized an explicit request to remember a response style.",
                         f"Saved {STYLES[remember_style]} for {DEMO_USERS[user_id]} in DynamoDB.",
                         "No Knowledge Base retrieval or Bedrock model call was needed.",
+                    ]
+                    st.session_state["memory_notice_details"] = [
+                        {"user_id": user_id, "previous_saved_style": current_style},
+                        {"request_text": request, "parsed_style": remember_style},
+                        {"DynamoDB_item_written": saved_item},
+                        None,
                     ]
                     st.session_state["memory_notice"] = (
                         f"Remembered for {DEMO_USERS[user_id]}: {STYLES[remember_style]}"
@@ -183,6 +204,9 @@ if submitted:
                     show_request_flow([
                         f"Read {DEMO_USERS[user_id]}'s response preference from DynamoDB.",
                         "Displayed the saved preference below; no Knowledge Base or Bedrock model call was needed.",
+                    ], [
+                        {"user_id": user_id, "saved_style": current_style},
+                        None,
                     ])
                     st.info(
                         f"I remember your response preference: {STYLES[current_style]}"
@@ -198,7 +222,10 @@ if submitted:
                         )
                     with flow_area.container():
                         show_request_flow(
-                            model_flow_steps(DEMO_USERS[user_id], metrics, task_result)
+                            model_flow_steps(DEMO_USERS[user_id], metrics, task_result),
+                            model_flow_details(
+                                user_id, request, metrics, sources, task_result
+                            ),
                         )
                     response_area.markdown(answer)
 
