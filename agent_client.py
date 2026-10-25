@@ -57,6 +57,16 @@ FORMAT_LABELS = {
 }
 
 
+class AgentExecutionError(RuntimeError):
+    """Preserve safe partial request metrics when an MCP tool fails."""
+
+    def __init__(self, message: str, metrics: dict, sources: list[dict]):
+        super().__init__(message)
+        self.metrics = metrics
+        self.sources = sources
+        self.stage = "MCP task tool"
+
+
 def run_agent(
     request: str,
     on_text: Callable[[str], None] | None = None,
@@ -242,9 +252,16 @@ def run_agent(
     ):
         raise RuntimeError("Task creation requires an explicit create-task request.")
     tool_started = perf_counter()
-    task_result = create_next_task_via_mcp()
-    metrics["tool_ms"] = round((perf_counter() - tool_started) * 1000)
     metrics["tool_calls"] = 1
+    try:
+        task_result = create_next_task_via_mcp()
+    except Exception as error:
+        metrics["tool_ms"] = round((perf_counter() - tool_started) * 1000)
+        metrics["total_ms"] = round((perf_counter() - started) * 1000)
+        raise AgentExecutionError(
+            f"MCP task tool failed: {error}", metrics, sources
+        ) from error
+    metrics["tool_ms"] = round((perf_counter() - tool_started) * 1000)
     metrics["duplicate_avoided"] = not task_result["created"]
     metrics["trace"]["tool_result"] = task_result
     print("MCP result:", task_result)

@@ -169,5 +169,42 @@ class AgentMetricsTests(unittest.TestCase):
         create_task.assert_not_called()
 
 
+    @patch("agent_client.create_next_task_via_mcp", side_effect=RuntimeError("DynamoDB unavailable"))
+    @patch("agent_client.boto3.client")
+    @patch("agent_client.retrieve_sources", return_value=[SOURCE])
+    def test_tool_failure_retains_partial_observability(
+        self, _retrieve, boto_client, _create_task
+    ):
+        from agent_client import AgentExecutionError
+        from observability import build_report
+
+        boto_client.return_value = stream_client([
+            {"contentBlockStart": {
+                "contentBlockIndex": 0,
+                "start": {"toolUse": {
+                    "toolUseId": "tool-1", "name": "create_next_project_atlas_task"
+                }},
+            }},
+            {"contentBlockDelta": {
+                "contentBlockIndex": 0, "delta": {"toolUse": {"input": "{}"}}
+            }},
+            {"messageStop": {"stopReason": "tool_use"}},
+            {"metadata": {"usage": {"inputTokens": 12, "outputTokens": 3}}},
+        ])
+        with self.assertRaises(AgentExecutionError) as caught:
+            run_agent("Create an internal task for the next open action.")
+        error = caught.exception
+        self.assertEqual(error.stage, "MCP task tool")
+        self.assertEqual(error.metrics["tool_calls"], 1)
+        self.assertIsNotNone(error.metrics["tool_ms"])
+        report = build_report(
+            "Create an internal task for the next open action.",
+            sources=error.sources, metrics=error.metrics,
+            status="error", error=str(error), error_stage=error.stage,
+        )
+        self.assertTrue(report["agent"]["tool_failed"])
+        self.assertTrue(report["rag"]["retrieval_succeeded"])
+
+
 if __name__ == "__main__":
     unittest.main()

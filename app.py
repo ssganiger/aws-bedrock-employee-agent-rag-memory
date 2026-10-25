@@ -11,6 +11,7 @@ from memory_client import (
     parse_remember_command,
     save_response_style,
 )
+from observability import build_report, session_summary
 from request_flow import model_flow_details, model_flow_steps
 
 
@@ -27,10 +28,10 @@ def show_request_flow(
 
 
 def show_performance(metrics: dict, task_result: dict | None) -> None:
-    st.subheader("Performance for this request")
+    st.markdown("#### Existing performance measures")
     total_card, first_card, cache_card, rate_card = st.columns(4)
     total_card.metric("Total time", f"{metrics['total_ms'] / 1000:.2f} s")
-    if task_result is None:
+    if metrics["first_tool_event_ms"] is None:
         first_card.metric(
             "TTFT", f"{metrics['ttft_ms']} ms"
             if metrics["ttft_ms"] is not None else "N/A"
@@ -99,6 +100,104 @@ def show_performance(metrics: dict, task_result: dict | None) -> None:
         )
 
 
+def show_observability(report: dict, metrics: dict | None = None,
+                       task_result: dict | None = None) -> None:
+    """Show observed values and explicitly mark unavailable evaluations."""
+    history = st.session_state.setdefault("observability_history", [])
+    history.append(report)
+    st.subheader("Observability")
+    st.caption(
+        "This transaction is measured by the app. Session rates cover only "
+        "requests sent from this browser session; refreshing may reset them."
+    )
+    system = report["system"]
+    cards = st.columns(4)
+    cards[0].metric("Request status", report["status"].title())
+    cards[1].metric(
+        "Backend latency",
+        f"{system['backend_latency_ms']} ms"
+        if system["backend_latency_ms"] is not None else "N/A",
+    )
+    cards[2].metric(
+        "Model cost estimate",
+        f"${system['estimated_model_usd']:.6f}"
+        if system["estimated_model_usd"] is not None else "N/A",
+    )
+    cards[3].metric(
+        "Cache read",
+        str(system["cache_read_tokens"])
+        if system["cache_read_tokens"] is not None else "N/A",
+    )
+    with st.expander("System level", expanded=True):
+        st.json(system)
+        st.caption("Error on this request: " + (report["error"] or "None reported."))
+        if report["error_stage"]:
+            st.caption("Failed stage: " + report["error_stage"])
+        st.caption("Cost is a model-only estimate when all four pricing rates are configured.")
+    with st.expander("RAG level"):
+        rag = report["rag"]
+        retrieval_state = (
+            "Succeeded" if rag["retrieval_succeeded"] else
+            "Failed" if rag["retrieval_succeeded"] is False else "N/A"
+        )
+        recall = (
+            f"{rag['recall_at_k']:.0%}"
+            if rag["recall_at_k"] is not None else "N/A"
+        )
+        st.write(
+            f"**Retrieval:** {retrieval_state}; "
+            f"**chunks returned:** {rag['returned_chunks'] if rag['returned_chunks'] is not None else 'N/A'}; "
+            f"**Recall@{rag['retrieval_k']}:** {recall}"
+        )
+        if rag["retrieved"]:
+            st.table(rag["retrieved"])
+        st.json(rag)
+        st.caption(
+            "Retrieval scores rank passages; they are not Recall@K or answer-quality scores. "
+            "Recall@K is calculated only for an exact question in the small labelled demo set."
+        )
+    with st.expander("Answer level"):
+        answer_observation = report["answer"]
+        st.write("**Citation-number check:** " + (answer_observation["citation_check"] or "N/A"))
+        st.write("**Faithfulness / groundedness / answer relevance:** N/A without an evaluator.")
+        st.json(answer_observation)
+        st.caption("Citation-number checks validate references, not factual support.")
+    with st.expander("Agent level"):
+        agent = report["agent"]
+        st.write(
+            f"**Model calls:** {agent['model_calls']}; "
+            f"**tool calls:** {agent['tool_calls']}; "
+            f"**tool outcome:** {'Success' if agent['tool_succeeded'] else 'Failed' if agent['tool_failed'] else 'N/A'}."
+        )
+        st.json(agent)
+        st.caption(
+            "Application retry and loop counts exclude any retries inside the AWS SDK. "
+            "Recording a task does not complete the underlying work."
+        )
+    with st.expander("Session rates and resource use"):
+        summary = session_summary(history)
+        st.write(f"**Transactions in this session:** {summary['transactions']}")
+        st.write(
+            f"**Error rate:** {summary['error_rate_percent']:.1f}%; "
+            f"**retrieval success rate:** "
+            + (f"{summary['retrieval_success_rate_percent']:.1f}%" if summary['retrieval_success_rate_percent'] is not None else "N/A")
+            + "; **tool success rate:** "
+            + (f"{summary['tool_success_rate_percent']:.1f}%" if summary['tool_success_rate_percent'] is not None else "N/A")
+        )
+        st.json(summary)
+        if metrics is not None:
+            st.json({
+                "retrieved_chunks": metrics.get("retrieved_chunks"),
+                "source_documents": metrics.get("source_documents"),
+                "model_calls": metrics.get("model_calls"),
+                "tool_calls": metrics.get("tool_calls"),
+                "response_format": metrics.get("response_format"),
+            })
+        st.caption("Rates use this browser session only. Quality failure rate needs evaluated answers.")
+    if metrics is not None:
+        show_performance(metrics, task_result)
+
+
 st.set_page_config(page_title="Project Atlas Employee Assistant")
 st.title("Project Atlas Employee Assistant")
 st.write("Ask about the fictional pilot, remember a response preference, or request an internal task.")
@@ -131,6 +230,9 @@ if st.session_state.get("memory_notice"):
     if flow:
         show_request_flow(flow, details)
     st.success(notice)
+    pending_report = st.session_state.pop("memory_notice_observability", None)
+    if pending_report is not None:
+        show_observability(pending_report)
 if current_style:
     st.subheader(f"Saved preferences for {DEMO_USERS[user_id]}")
     st.write(f"- **Response style:** {STYLES[current_style]}")
@@ -143,6 +245,9 @@ if current_style:
             delete_response_style(user_id)
             st.session_state["memory_notice"] = (
                 f"Forgot the saved preference for {DEMO_USERS[user_id]}."
+            )
+            st.session_state["memory_notice_observability"] = build_report(
+                "Forget saved preference", status="success"
             )
             st.rerun()
         except (BotoCoreError, ClientError) as error:
@@ -158,6 +263,7 @@ if submitted:
             {"request_text": request},
         ])
         st.warning("Enter a question or task request first.")
+        show_observability(build_report(request, status="rejected"))
     else:
         flow_area = None
         try:
@@ -178,6 +284,7 @@ if submitted:
                     "cannot be deleted by a text request. Use Forget saved "
                     "preference below to delete the saved style."
                 )
+                show_observability(build_report(request, status="denied"))
             else:
                 remember_style = parse_remember_command(request)
                 if remember_style is not None:
@@ -197,6 +304,9 @@ if submitted:
                     st.session_state["memory_notice"] = (
                         f"Remembered for {DEMO_USERS[user_id]}: {STYLES[remember_style]}"
                     )
+                    st.session_state["memory_notice_observability"] = build_report(
+                        request, status="success"
+                    )
                     st.rerun()
                 elif request.strip().lower().rstrip("?. ") in {
                     "what do you remember about me", "show my memory"
@@ -212,6 +322,7 @@ if submitted:
                         f"I remember your response preference: {STYLES[current_style]}"
                         if current_style else "I have no saved response preference for you."
                     )
+                    show_observability(build_report(request))
                 else:
                     flow_area = st.empty()
                     st.subheader("Response")
@@ -242,7 +353,10 @@ if submitted:
                         st.write(f"**State:** {task['state']}")
                         st.caption(f"Source: {task['source_uri']}")
 
-                    show_performance(metrics, task_result)
+                    show_observability(
+                        build_report(request, answer, sources, task_result, metrics),
+                        metrics, task_result,
+                    )
                     st.subheader("Sources")
                     for number, result in enumerate(sources, start=1):
                         uri = result["location"]["s3Location"]["uri"]
@@ -258,3 +372,14 @@ if submitted:
                 with flow_area.container():
                     show_request_flow(failure_step)
             st.error(str(error))
+            partial_metrics = getattr(error, "metrics", None)
+            partial_sources = getattr(error, "sources", None)
+            show_observability(
+                build_report(
+                    request, sources=partial_sources, metrics=partial_metrics,
+                    status="error", error=str(error),
+                    rag_attempted=flow_area is not None,
+                    error_stage=getattr(error, "stage", None),
+                ),
+                partial_metrics,
+            )

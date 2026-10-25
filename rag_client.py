@@ -3,6 +3,9 @@ import os
 import boto3
 
 
+RETRIEVAL_K = 5
+
+
 def retrieve_sources(question: str) -> list[dict]:
     kb_id = os.environ["BEDROCK_KNOWLEDGE_BASE_ID"]
     client = boto3.client("bedrock-agent-runtime", region_name="ap-southeast-2")
@@ -11,7 +14,7 @@ def retrieve_sources(question: str) -> list[dict]:
         knowledgeBaseId=kb_id,
         retrievalQuery={"text": question},
         retrievalConfiguration={
-            "vectorSearchConfiguration": {"numberOfResults": 5}
+            "vectorSearchConfiguration": {"numberOfResults": RETRIEVAL_K}
         },
     )
     return response["retrievalResults"]

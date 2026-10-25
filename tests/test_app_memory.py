@@ -48,6 +48,11 @@ class MemoryPageTests(unittest.TestCase):
         )
         text = " ".join(item.value for item in page.markdown)
         self.assertIn("saved response preference", text)
+        self.assertIn("Observability", headings)
+        self.assertTrue({
+            "System level", "RAG level", "Answer level", "Agent level",
+            "Session rates and resource use",
+        }.issubset({item.label for item in page.expander}))
         self.assertIn("Knowledge Base", text)
         self.assertIn("Prompt cache hit: reused 75 input tokens", text)
         self.assertIn("Brief action bullets (saved preference)", text)
@@ -108,7 +113,9 @@ class MemoryPageTests(unittest.TestCase):
             self.assertEqual(saved["demo-alex"], "brief_actions")
             self.assertFalse(page.exception)
             self.assertEqual(page.subheader[0].value, "What internally happened")
-            self.assertEqual(len(page.expander), 3)
+            self.assertEqual(
+                len([item for item in page.expander if item.label.startswith("Step ")]), 3
+            )
             self.assertIn(
                 "Saved Brief bullets with blockers, owners, and due dates",
                 " ".join(item.value for item in page.markdown),
@@ -162,7 +169,9 @@ class MemoryPageTests(unittest.TestCase):
             self.assertNotIn("demo-alex", saved)
             delete_call.assert_called_once_with("demo-alex")
             self.assertEqual(saved["demo-taylor"], "detailed")
-            self.assertEqual(len(restarted.subheader), 0)
+            self.assertEqual(
+                [item.value for item in restarted.subheader], ["Observability"]
+            )
             self.assertFalse(restarted.exception)
 
 
