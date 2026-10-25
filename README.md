@@ -142,6 +142,28 @@ Enter these fictional requests in the Streamlit app:
 
 The memory path accepts explicit `Remember that I prefer ...` requests for a short or detailed style, plus the page controls. It stores a controlled style value, not arbitrary instructions. `What do you remember about me?` shows the saved preference without a model call. The current task path accepts explicit requests beginning with `create ` or `please create ` and containing `task`. The latest dated status document must contain action IDs, owner teams, and due dates in the format shown in `knowledge/project-atlas-status.md`.
 
+## Manual end-to-end test script
+
+Start the app with the command in **Run locally**. The page has two selectors: **Fictional demo user** chooses whose memory to use, while **Response preference** is a value you *could* save. A visible value in the second selector is not saved until you click **Save preference**. Use **Currently remembered** to see what DynamoDB actually holds. Replace the text in **Your request** before each **Send**.
+
+| Step | Action in the page | Expected observation |
+| --- | --- | --- |
+| 1. Reset | Select **Alex Morgan** and click **Forget preference**. Select **Taylor Chen** and do the same. Return to Alex. | **Currently remembered: Nothing** for each user. This gives the test a known starting point even after an earlier run. |
+| 2. Save by prompt | With Alex selected, enter `Remember that I prefer short updates with blockers, owners, and due dates.` in **Your request** and click **Send**. | A confirmation appears, and **Currently remembered** says **Brief bullets with blockers, owners, and due dates**. The response-preference selector also reflects the saved value. |
+| 3. Inspect | Enter `What do you remember about me?` and click **Send**. | The app reports Alex's brief preference. No Knowledge Base retrieval or Bedrock model call is needed for this memory check. |
+| 4. Apply to RAG | Enter `What remains outstanding before the Project Atlas pilot can launch?` and click **Send**. | The answer lists the three open actions from the fictional status document, with source references. It should favor brief bullets with blockers, owners, and exact due dates. Open **How this request ran** and check **Personal memory: Saved response style applied**. |
+| 5. Check isolation | Switch **Fictional demo user** to **Taylor Chen**. Enter `What do you remember about me?` and click **Send**. | Taylor shows **Currently remembered: Nothing** and has no saved preference. Alex's memory was not copied to Taylor. |
+| 6. Save with controls | For Taylor, choose **Detailed explanations with background and reasoning** in **Response preference** and click **Save preference**. Ask the pilot-launch question from step 4. | Taylor shows the detailed preference. The answer can use more explanation, but its project facts and citations still come from the same documents. |
+| 7. Check separation again | Switch back to Alex. | Alex still shows the brief preference; saving Taylor's preference did not change Alex's. |
+| 8. Check persistence | Stop Streamlit with `Control+C`, start it again with the same **Run locally** command, and check both users. | Alex still has the brief preference and Taylor still has the detailed preference. The values survived the app process restart because DynamoDB stores them. |
+| 9. Forget one user | Select Alex and click **Forget preference**. Then check Taylor. | Alex shows **Currently remembered: Nothing**; Taylor still has the detailed preference. A repeat click for Alex reports that no preference was saved. |
+| 10. Check task action | Enter `Create an internal task for the next open Project Atlas action.` and click **Send** twice. | The page shows the IT sign-in task due **27 October 2026**. The first request creates it only if absent; the second returns the existing task and says no duplicate was created. No email is sent. |
+| 11. Inspect caching | Ask the *same* pilot-launch question twice within a few minutes and compare **Cache reused** and the cache-read/cache-write token counts in **How this request ran**. | A repeat may show cache-read tokens. Cache hits are not guaranteed; a cache write alone is not a hit. |
+
+Steps 2, 3, 5, and 9 are memory-only interactions and do not invoke the model. Question and task steps use AWS services and may incur small charges. The model's exact wording can vary, so judge answers by the sourced facts and selected format rather than exact text. The fictional user selector is not authentication; use no real personal data.
+
+To run the offline regression checks from the repository folder, use `python -m unittest discover -s tests -q`. Success ends with `OK`. These tests cover memory save/update/delete, user separation, page restart behavior, and the model/tool integration logic with mocked AWS responses.
+
 ## Performance panel
 
 Each request shows total time, cache reuse, and either **TTFT** for a question or **first tool event** for a task request. TTFT is measured on the local client from the start of the streaming model call to its first nonempty text chunk; it excludes Knowledge Base retrieval. A tool-only model response has no answer TTFT, so the page shows when the tool request first arrived instead. The answer appears incrementally as text arrives.
