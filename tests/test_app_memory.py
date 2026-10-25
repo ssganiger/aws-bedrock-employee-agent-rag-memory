@@ -6,6 +6,46 @@ from streamlit.testing.v1 import AppTest
 
 
 class MemoryPageTests(unittest.TestCase):
+    def test_question_shows_entire_backend_flow_above_response(self):
+        metrics = {
+            "total_ms": 1200, "ttft_ms": 200, "first_tool_event_ms": None,
+            "cache_reuse_pct": 75.0, "output_tokens_per_second": 20.0,
+            "memory_ms": 12, "retrieval_ms": 80, "model_ms": 1000,
+            "model_service_ms": 900, "tool_ms": None,
+            "total_input_tokens": 100, "input_tokens": 25,
+            "cache_read_tokens": 75, "cache_write_tokens": 0,
+            "output_tokens": 20, "retrieved_chunks": 3,
+            "source_documents": 2, "model_calls": 1, "tool_calls": 0,
+            "memory_loaded": True,
+            "response_format": "Brief action bullets (saved preference)",
+            "duplicate_avoided": False,
+        }
+        sources = [{
+            "location": {"s3Location": {"uri": "s3://example/status.md"}}
+        }]
+        with (
+            patch("memory_client.get_response_style", return_value="brief_actions"),
+            patch(
+                "agent_client.run_agent",
+                return_value=("- IT: test sign-in [1].", sources, None, metrics),
+            ),
+        ):
+            app_path = Path(__file__).resolve().parents[1] / "app.py"
+            page = AppTest.from_file(str(app_path), default_timeout=15).run()
+            page.text_area[0].set_value("What remains outstanding?")
+            next(button for button in page.button if button.label == "Send").click().run()
+
+        self.assertFalse(page.exception)
+        headings = [item.value for item in page.subheader]
+        self.assertLess(
+            headings.index("What internally happened"), headings.index("Response")
+        )
+        text = " ".join(item.value for item in page.markdown)
+        self.assertIn("saved response preference", text)
+        self.assertIn("Knowledge Base", text)
+        self.assertIn("Prompt cache hit: reused 75 input tokens", text)
+        self.assertIn("Brief action bullets (saved preference)", text)
+
     def test_remember_restart_user_separation_and_forget(self):
         saved = {}
 
@@ -38,6 +78,11 @@ class MemoryPageTests(unittest.TestCase):
             next(button for button in page.button if button.label == "Send").click().run()
             self.assertEqual(saved["demo-alex"], "brief_actions")
             self.assertFalse(page.exception)
+            self.assertEqual(page.subheader[0].value, "What internally happened")
+            self.assertIn(
+                "Saved Brief bullets with blockers, owners, and due dates",
+                " ".join(item.value for item in page.markdown),
+            )
             model_call.assert_not_called()
 
             restarted = AppTest.from_file(str(app_path), default_timeout=15).run()
@@ -74,6 +119,10 @@ class MemoryPageTests(unittest.TestCase):
                 "Request denied by the app's memory policy" in item.value
                 for item in restarted.warning
             ))
+            self.assertIn(
+                "What internally happened",
+                [item.value for item in restarted.subheader],
+            )
             delete_call.assert_not_called()
             model_call.assert_not_called()
             next(

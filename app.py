@@ -11,6 +11,13 @@ from memory_client import (
     parse_remember_command,
     save_response_style,
 )
+from request_flow import model_flow_steps
+
+
+def show_request_flow(steps: list[str]) -> None:
+    st.subheader("What internally happened")
+    for step in steps:
+        st.markdown(f"- {step}")
 
 
 def show_performance(metrics: dict, task_result: dict | None) -> None:
@@ -64,9 +71,14 @@ def show_performance(metrics: dict, task_result: dict | None) -> None:
             f"from {metrics['source_documents']} documents; "
             f"{metrics['model_calls']} model call; {metrics['tool_calls']} tool call."
         )
+        if task_result is None:
+            st.write(f"**Response format:** {metrics['response_format']}")
         st.write(
             "**Personal memory:** " +
-            ("Saved response style applied." if metrics["memory_loaded"] else "No preference saved.")
+            (
+                "Saved response style loaded for this request."
+                if metrics["memory_loaded"] else "No preference saved."
+            )
         )
         if metrics["duplicate_avoided"]:
             st.write("**Task efficiency:** Existing task reused; no duplicate write.")
@@ -104,7 +116,11 @@ st.caption(
     "To remove a saved style, use the Forget button below when it appears."
 )
 if st.session_state.get("memory_notice"):
-    st.success(st.session_state.pop("memory_notice"))
+    notice = st.session_state.pop("memory_notice")
+    flow = st.session_state.pop("memory_notice_flow", None)
+    if flow:
+        show_request_flow(flow)
+    st.success(notice)
 if current_style:
     st.subheader(f"Saved preferences for {DEMO_USERS[user_id]}")
     st.write(f"- **Response style:** {STYLES[current_style]}")
@@ -124,10 +140,21 @@ if current_style:
 
 if submitted:
     if not request.strip():
+        show_request_flow([
+            f"Checked {DEMO_USERS[user_id]}'s saved preference in DynamoDB.",
+            "The request was empty, so no Knowledge Base retrieval or model call followed.",
+        ])
         st.warning("Enter a question or task request first.")
     else:
+        flow_area = None
         try:
             if is_forget_command(request):
+                show_request_flow([
+                    f"Checked {DEMO_USERS[user_id]}'s saved preference in DynamoDB.",
+                    "Recognized a request to delete personal memory.",
+                    "Applied the app rule: text requests cannot delete saved preferences.",
+                    "Stopped before Knowledge Base retrieval, Bedrock, or a DynamoDB deletion.",
+                ])
                 st.warning(
                     "Request denied by the app's memory policy: saved preferences "
                     "cannot be deleted by a text request. Use Forget saved "
@@ -137,6 +164,12 @@ if submitted:
                 remember_style = parse_remember_command(request)
                 if remember_style is not None:
                     save_response_style(user_id, remember_style)
+                    st.session_state["memory_notice_flow"] = [
+                        f"Checked {DEMO_USERS[user_id]}'s saved preference in DynamoDB.",
+                        "Recognized an explicit request to remember a response style.",
+                        f"Saved {STYLES[remember_style]} for {DEMO_USERS[user_id]} in DynamoDB.",
+                        "No Knowledge Base retrieval or Bedrock model call was needed.",
+                    ]
                     st.session_state["memory_notice"] = (
                         f"Remembered for {DEMO_USERS[user_id]}: {STYLES[remember_style]}"
                     )
@@ -144,16 +177,25 @@ if submitted:
                 elif request.strip().lower().rstrip("?. ") in {
                     "what do you remember about me", "show my memory"
                 }:
+                    show_request_flow([
+                        f"Read {DEMO_USERS[user_id]}'s response preference from DynamoDB.",
+                        "Displayed the saved preference below; no Knowledge Base or Bedrock model call was needed.",
+                    ])
                     st.info(
                         f"I remember your response preference: {STYLES[current_style]}"
                         if current_style else "I have no saved response preference for you."
                     )
                 else:
+                    flow_area = st.empty()
                     st.subheader("Response")
                     response_area = st.empty()
                     with st.spinner("Checking Project Atlas documents..."):
                         answer, sources, task_result, metrics = run_agent(
                             request, on_text=response_area.markdown, user_id=user_id
+                        )
+                    with flow_area.container():
+                        show_request_flow(
+                            model_flow_steps(DEMO_USERS[user_id], metrics, task_result)
                         )
                     response_area.markdown(answer)
 
@@ -176,4 +218,13 @@ if submitted:
                         uri = result["location"]["s3Location"]["uri"]
                         st.caption(f"[{number}] {uri}")
         except (BotoCoreError, ClientError, RuntimeError, ValueError) as error:
+            failure_step = [
+                "The request stopped before a complete result because the app "
+                "or an AWS service returned an error."
+            ]
+            if flow_area is None:
+                show_request_flow(failure_step)
+            else:
+                with flow_area.container():
+                    show_request_flow(failure_step)
             st.error(str(error))

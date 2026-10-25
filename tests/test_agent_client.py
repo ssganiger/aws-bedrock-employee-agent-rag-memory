@@ -59,6 +59,9 @@ class AgentMetricsTests(unittest.TestCase):
         self.assertEqual(metrics["cache_reuse_pct"], 80.0)
         self.assertEqual(metrics["retrieved_chunks"], 1)
         self.assertEqual(metrics["tool_calls"], 0)
+        self.assertEqual(metrics["response_format"], "Default prose (no saved preference)")
+        content = boto_client.return_value.converse_stream.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("two short prose paragraphs", content[2]["text"])
         create_task.assert_not_called()
 
     @patch("agent_client.boto3.client")
@@ -80,9 +83,10 @@ class AgentMetricsTests(unittest.TestCase):
         self.get_response_style.assert_called_once_with("demo-taylor")
         content = boto_client.return_value.converse_stream.call_args.kwargs["messages"][0]["content"]
         self.assertEqual(content[1], {"cachePoint": {"type": "default"}})
-        self.assertIn("Brief bullets", content[2]["text"])
+        self.assertIn("only concise action bullets", content[2]["text"])
         self.assertIn("User request: What is open?", content[3]["text"])
         self.assertTrue(metrics["memory_loaded"])
+        self.assertEqual(metrics["response_format"], "Brief action bullets (saved preference)")
 
     @patch("agent_client.create_next_task_via_mcp")
     @patch("agent_client.boto3.client")
