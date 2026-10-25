@@ -72,7 +72,10 @@ def show_performance(metrics: dict, task_result: dict | None) -> None:
             f"{metrics['model_calls']} model call; {metrics['tool_calls']} tool call."
         )
         if task_result is None:
-            st.write(f"**Response format:** {metrics['response_format']}")
+            st.write(
+                "**Response format:** "
+                + metrics.get("response_format", "Unavailable in this running app; restart Streamlit.")
+            )
         st.write(
             "**Personal memory:** " +
             (

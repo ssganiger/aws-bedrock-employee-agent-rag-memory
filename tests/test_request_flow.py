@@ -39,6 +39,14 @@ class RequestFlowTests(unittest.TestCase):
         self.assertIn("No tokens were read", steps[3])
         self.assertNotIn("cache hit", steps[3].lower())
 
+    def test_older_running_agent_does_not_crash_or_claim_a_format(self):
+        del self.metrics["response_format"]
+
+        steps = model_flow_steps("Alex Morgan", self.metrics, None)
+
+        self.assertIn("did not report which response format", steps[-1])
+        self.assertIn("Restart Streamlit", steps[-1])
+
     def test_task_explains_mcp_and_duplicate_result(self):
         steps = model_flow_steps("Alex Morgan", self.metrics, {"created": False})
 

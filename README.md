@@ -176,6 +176,8 @@ The **How this request ran** expander shows personal-memory read time, retrieval
 
 For every **Send**, **What internally happened** appears above the result with short bullets in the order the request was handled. Memory commands show their direct DynamoDB path. Questions show memory lookup, RAG retrieval, prompt caching activity reported by Bedrock, and the answer format applied. Task requests also show the MCP tool and whether the task was created or reused. The block describes the observed request; it does not label a cache write as a hit. The detailed token counts remain in **How this request ran**.
 
+After updating the Python files, stop the running Streamlit process with `Control+C` and start it again using the **Run locally** command. A browser refresh can leave previously imported Python modules in the running process. If the page says that the response format was not reported, restart Streamlit; the answer itself remains visible.
+
 For informational answers, the app uses visibly different response formats: a saved brief preference requests action bullets only, a saved detailed preference requests explanatory paragraphs, and no saved preference uses the app's default short prose paragraphs. The response-format directive is placed after the cache checkpoint, so a reused source prefix does not retain a deleted personal preference. Exact model wording can still vary.
 
 ## What to inspect while learning

@@ -35,10 +35,18 @@ def model_flow_steps(user_name: str, metrics: dict, task_result: dict | None) ->
         steps.append("Prompt cache: Bedrock reported no cache read or write for this request.")
 
     if task_result is None:
-        steps.append(
-            "Nova 2 Lite generated the source-grounded answer using "
-            f"{metrics['response_format']}."
-        )
+        response_format = metrics.get("response_format")
+        if response_format:
+            steps.append(
+                "Nova 2 Lite generated the source-grounded answer using "
+                f"{response_format}."
+            )
+        else:
+            steps.append(
+                "Nova 2 Lite generated the answer, but this running app did not "
+                "report which response format it used. Restart Streamlit to load "
+                "the latest code."
+            )
     else:
         steps.append("Nova 2 Lite selected the MCP task tool for this explicit task request.")
         steps.append("The MCP tool checked the latest status document in S3 and the task table in DynamoDB.")

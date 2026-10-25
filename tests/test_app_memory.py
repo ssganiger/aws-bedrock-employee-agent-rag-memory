@@ -46,6 +46,26 @@ class MemoryPageTests(unittest.TestCase):
         self.assertIn("Prompt cache hit: reused 75 input tokens", text)
         self.assertIn("Brief action bullets (saved preference)", text)
 
+        del metrics["response_format"]
+        with (
+            patch("memory_client.get_response_style", return_value="brief_actions"),
+            patch(
+                "agent_client.run_agent",
+                return_value=("- IT: test sign-in [1].", sources, None, metrics),
+            ),
+        ):
+            older_page = AppTest.from_file(str(app_path), default_timeout=15).run()
+            older_page.text_area[0].set_value("What remains outstanding?")
+            next(
+                button for button in older_page.button if button.label == "Send"
+            ).click().run()
+
+        self.assertFalse(older_page.exception)
+        self.assertIn(
+            "Restart Streamlit",
+            " ".join(item.value for item in older_page.markdown),
+        )
+
     def test_remember_restart_user_separation_and_forget(self):
         saved = {}
 
