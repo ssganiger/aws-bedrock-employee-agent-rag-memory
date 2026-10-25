@@ -17,6 +17,11 @@ def stream_client(events):
 
 
 class AgentMetricsTests(unittest.TestCase):
+    def setUp(self):
+        memory_patch = patch("agent_client.get_response_style", return_value=None)
+        self.get_response_style = memory_patch.start()
+        self.addCleanup(memory_patch.stop)
+
     @patch("agent_client.create_next_task_via_mcp")
     @patch("agent_client.boto3.client")
     @patch("agent_client.retrieve_sources", return_value=[SOURCE])
@@ -55,6 +60,29 @@ class AgentMetricsTests(unittest.TestCase):
         self.assertEqual(metrics["retrieved_chunks"], 1)
         self.assertEqual(metrics["tool_calls"], 0)
         create_task.assert_not_called()
+
+    @patch("agent_client.boto3.client")
+    @patch("agent_client.retrieve_sources", return_value=[SOURCE])
+    def test_personal_memory_is_after_cache_checkpoint(self, _retrieve, boto_client):
+        self.get_response_style.return_value = "brief_actions"
+        boto_client.return_value = stream_client([
+            {"contentBlockDelta": {
+                "contentBlockIndex": 0, "delta": {"text": "- One blocker [1]."}
+            }},
+            {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": {"inputTokens": 30, "outputTokens": 5}}},
+        ])
+
+        _answer, _sources, _task, metrics = run_agent(
+            "What is open?", user_id="demo-taylor"
+        )
+
+        self.get_response_style.assert_called_once_with("demo-taylor")
+        content = boto_client.return_value.converse_stream.call_args.kwargs["messages"][0]["content"]
+        self.assertEqual(content[1], {"cachePoint": {"type": "default"}})
+        self.assertIn("Brief bullets", content[2]["text"])
+        self.assertIn("User request: What is open?", content[3]["text"])
+        self.assertTrue(metrics["memory_loaded"])
 
     @patch("agent_client.create_next_task_via_mcp")
     @patch("agent_client.boto3.client")

@@ -1,6 +1,6 @@
 # AWS Bedrock AI | Project Atlas Employee Assistant
 
-A fictional employee assistant that answers questions about a project pilot and creates internal follow-up tasks. It demonstrates retrieval-augmented generation (RAG), Amazon Bedrock prompt caching, model-selected MCP tools, and duplicate-safe task creation with AWS services.
+A fictional employee assistant that answers questions about a project pilot, remembers a user's response preference, and creates internal follow-up tasks. It demonstrates retrieval-augmented generation (RAG), persistent personal memory, Amazon Bedrock prompt caching, model-selected MCP tools, and duplicate-safe task creation with AWS services.
 
 Project Atlas, its documents, and its tasks are fictional. This is an independent portfolio project.
 
@@ -14,6 +14,7 @@ By building and running this project, you'll learn how to:
 4. **Connect an AI model to a business action:** Let the model request an MCP tool, validate that request in Python, and create an internal follow-up task only when the user asks for one.
 5. **Make actions safe to retry:** Read the latest status from S3 and use a conditional DynamoDB write so repeated requests return the existing task instead of creating duplicates.
 6. **Measure the user experience and resource use:** Inspect total latency, time to first answer text (TTFT), approximate output rate, token usage, cache reuse, retrieval time, and tool time in the Streamlit app.
+7. **Build personal persistent memory:** Save, retrieve, update, and delete a fictional user's response preference in DynamoDB. Restart the app and switch demo users to verify persistence and separation.
 
 The end result is a small employee assistant that answers from project documents and takes one controlled action. The **Try the demo** and **What to inspect while learning** sections below give you requests to run and code paths to explore.
 
@@ -26,6 +27,7 @@ The end result is a small employee assistant that answers from project documents
 5. Reads the latest dated Project Atlas status document from S3, selects the earliest due open action, and creates or returns its internal DynamoDB task.
 6. Shows whether the task was newly created or already existed.
 7. Streams question answers and displays per-request latency, TTFT, token throughput, prompt cache usage, and resource counts.
+8. Stores one controlled response-style preference per fictional demo user in a separate DynamoDB table. The preference changes answer format, while project facts still come from retrieved documents.
 
 ## Architecture
 
@@ -34,8 +36,10 @@ flowchart LR
     A[Project Atlas Markdown in S3] --> B[Bedrock Knowledge Base]
     B --> C[S3 Vectors index]
     D[Employee request in Streamlit] --> E[Retrieve relevant passages]
+    D --> M[Read or manage personal memory in DynamoDB]
     B --> E
     E --> F[Nova 2 Lite with cache checkpoint]
+    M --> F
     F -->|Question| G[Answer with source references]
     F -->|Explicit task request| H[Python validates tool request]
     H --> I[Local MCP server]
@@ -44,7 +48,7 @@ flowchart LR
     K --> L[Show created or existing task]
 ```
 
-The question path uses RAG: the Knowledge Base retrieves passages, and Nova 2 Lite produces an answer grounded in them. The task path uses a local MCP tool. Task creation reads the current status directly from S3, so it does not rely on a possibly stale retrieved passage. A conditional DynamoDB write prevents duplicates for the same action ID. The app does not email employees or mark the underlying work complete.
+The question path uses RAG: the Knowledge Base retrieves passages, and Nova 2 Lite produces an answer grounded in them. A separate DynamoDB table stores only a response-format preference for each fictional user. The app reads that preference before answering and places it after the Bedrock cache checkpoint. Explicit memory commands use DynamoDB directly, without a Knowledge Base or model call. The task path uses a local MCP tool. Task creation reads the current status directly from S3, so it does not rely on a possibly stale retrieved passage. A conditional DynamoDB write prevents duplicates for the same action ID. The app does not email employees or mark the underlying work complete.
 
 ## Components
 
@@ -58,7 +62,8 @@ The question path uses RAG: the Knowledge Base retrieves passages, and Nova 2 Li
 | Nova 2 Lite through Bedrock ConverseStream | Streams answers and selects the task tool |
 | Bedrock prompt caching | Makes a stable input prefix eligible for reuse |
 | Local MCP Python server and client | Exposes the internal task action |
-| Amazon DynamoDB | Stores tasks using duplicate-safe conditional writes |
+| Amazon DynamoDB action table | Stores tasks using duplicate-safe conditional writes |
+| Amazon DynamoDB memory table | Stores one response-style preference per fictional user |
 
 The Python clients use `ap-southeast-2` (Sydney). Nova 2 Lite uses a global inference profile, which may route inference outside Sydney. Use fictional data for this demonstration.
 
@@ -83,7 +88,7 @@ Keep AWS credentials out of the repository.
 
 2. In the Bedrock console, create a Knowledge Base with an S3 data source at `s3://YOUR_SOURCE_BUCKET/project-atlas/`. This pilot used Titan Text Embeddings V2, 1024-dimensional floating-point embeddings, and quick-created S3 Vectors storage. Sync the data source after creation and whenever a source document changes. Record the Knowledge Base ID.
 
-3. Create a DynamoDB table in Sydney with the string partition key `action_id` and on-demand billing:
+3. Create the action DynamoDB table in Sydney with the string partition key `action_id` and on-demand billing:
 
    ```bash
    aws dynamodb create-table \
@@ -94,7 +99,18 @@ Keep AWS credentials out of the repository.
      --profile YOUR_AWS_PROFILE --region ap-southeast-2
    ```
 
-Wait until the table is `ACTIVE`. The AWS profile needs permission to retrieve from the Knowledge Base, invoke Nova 2 Lite, read the source S3 objects, and read/write the DynamoDB table.
+4. Create a separate memory table with a string partition key `user_id` and string sort key `memory_key`:
+
+   ```bash
+   aws dynamodb create-table \
+     --table-name project-atlas-memory \
+     --attribute-definitions AttributeName=user_id,AttributeType=S AttributeName=memory_key,AttributeType=S \
+     --key-schema AttributeName=user_id,KeyType=HASH AttributeName=memory_key,KeyType=RANGE \
+     --billing-mode PAY_PER_REQUEST \
+     --profile YOUR_AWS_PROFILE --region ap-southeast-2
+   ```
+
+Wait until both tables are `ACTIVE`. The AWS profile needs permission to retrieve from the Knowledge Base, invoke Nova 2 Lite, read the source S3 objects, and read/write both DynamoDB tables.
 
 ## Run locally
 
@@ -110,6 +126,7 @@ AWS_PROFILE=YOUR_AWS_PROFILE \
 BEDROCK_KNOWLEDGE_BASE_ID=YOUR_KNOWLEDGE_BASE_ID \
 ATLAS_SOURCE_BUCKET=YOUR_SOURCE_BUCKET \
 ATLAS_ACTIONS_TABLE=project-atlas-actions \
+ATLAS_MEMORY_TABLE=project-atlas-memory \
 python -m streamlit run app.py
 ```
 
@@ -121,8 +138,9 @@ Enter these fictional requests in the Streamlit app:
 
 - **Question:** `What remains outstanding before the Project Atlas pilot can launch?` Expected: three blockers from the current status, with source references. No task is created.
 - **Task:** `Create an internal task for the next open Project Atlas action.` Expected: an IT task for testing sign-in for the remaining 12 volunteers, due 27 October 2026. If that task is absent, the request creates it. If it already exists, the app returns it and says no duplicate was created.
+- **Memory:** Select fictional user Alex Morgan and enter `Remember that I prefer short updates with blockers, owners, and due dates.` Expected: the saved preference appears under **Personal memory**. Ask the question above; its answer should use a short action-oriented format while keeping source references. Restart the app and confirm Alex's preference remains. Switch to Taylor Chen and confirm Taylor has no preference. Use **Forget preference** for Alex and confirm it disappears.
 
-The current task path accepts explicit requests beginning with `create ` or `please create ` and containing `task`. The latest dated status document must contain action IDs, owner teams, and due dates in the format shown in `knowledge/project-atlas-status.md`.
+The memory path accepts explicit `Remember that I prefer ...` requests for a short or detailed style, plus the page controls. It stores a controlled style value, not arbitrary instructions. `What do you remember about me?` shows the saved preference without a model call. The current task path accepts explicit requests beginning with `create ` or `please create ` and containing `task`. The latest dated status document must contain action IDs, owner teams, and due dates in the format shown in `knowledge/project-atlas-status.md`.
 
 ## Performance panel
 
@@ -130,7 +148,7 @@ Each request shows total time, cache reuse, and either **TTFT** for a question o
 
 The approximate output rate divides Bedrock's output-token count by the locally measured time after the first text chunk. This is a learning indicator, not a precise model decoding benchmark. It is shown as N/A for a tool-only response.
 
-The **How this request ran** expander shows retrieval time, local model-call time, Bedrock-reported model latency, optional MCP task time, uncached input tokens, cache-read and cache-write tokens, output tokens, retrieved chunks, distinct source documents, and call counts. Cache reuse is `cache-read tokens / (uncached input + cache-read + cache-write tokens)`. A cache write is not a cache hit; repeat an identical question soon afterward to observe a possible cache read. [AWS documents](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html) the usage fields and cache eligibility rules.
+The **How this request ran** expander shows personal-memory read time, retrieval time, local model-call time, Bedrock-reported model latency, optional MCP task time, uncached input tokens, cache-read and cache-write tokens, output tokens, retrieved chunks, distinct source documents, and call counts. Cache reuse is `cache-read tokens / (uncached input + cache-read + cache-write tokens)`. A cache write is not a cache hit; repeat an identical question soon afterward to observe a possible cache read. [AWS documents](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html) the usage fields and cache eligibility rules.
 
 ## What to inspect while learning
 
@@ -138,12 +156,13 @@ The **How this request ran** expander shows retrieval time, local model-call tim
 - **Prompt caching:** `agent_client.py` places a `cachePoint` after the retrieved context. Compare cache-write tokens on an eligible first call with cache-read tokens on a repeated call in the page's performance expander. A cache hit is not guaranteed. See [AWS prompt caching documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html).
 - **Streaming and TTFT:** `agent_client.py` timestamps the first nonempty `contentBlockDelta` text event from `ConverseStream`. The stream's final metadata supplies token usage and Bedrock latency. See the [Nova streaming guide](https://docs.aws.amazon.com/nova/latest/nova2-userguide/streaming-responses.html).
 - **MCP and actions:** `mcp_server.py` exposes the tools; `mcp_actions_client.py` calls the task tool; `action_workflow.py` parses the latest S3 status; and `actions_client.py` creates or retrieves the DynamoDB task.
+- **Persistent memory:** `memory_client.py` reads and writes the `response_style` item keyed by fictional user ID. `app.py` lets you save, inspect, and forget it. `agent_client.py` reads it on each question and puts it after the cache checkpoint so a changed preference does not alter the earlier cached prefix. Project status is always grounded in retrieved documents.
 
 ## Cost and cleanup
 
 This demo can incur charges for model inference, embeddings and ingestion, S3 Vectors, S3 storage and requests, and DynamoDB operations. Cache writes and reads can have different rates from uncached model input. Review current [Bedrock pricing](https://aws.amazon.com/bedrock/pricing/), [S3 pricing](https://aws.amazon.com/s3/pricing/), and [DynamoDB pricing](https://aws.amazon.com/dynamodb/pricing/) for your Region and account before extended use. AWS credits and eligibility vary by account.
 
-When finished, remove the demo Knowledge Base and its vector resources, source S3 objects and bucket, and DynamoDB table through the AWS console. Check the resource lists and billing page afterward; deleting the Knowledge Base may not remove every associated resource.
+When finished, remove the demo Knowledge Base and its vector resources, source S3 objects and bucket, and both DynamoDB tables through the AWS console. Check the resource lists and billing page afterward; deleting the Knowledge Base may not remove every associated resource.
 
 ## Limits
 
@@ -151,3 +170,5 @@ When finished, remove the demo Knowledge Base and its vector resources, source S
 - The model can produce an inaccurate answer or citation; check claims against the displayed sources.
 - The action parser expects the documented status format. It does not accept arbitrary prose or automatically close tasks when a newer status changes.
 - Creating a task does not mean the underlying action is complete.
+- The fictional user selector is for learning, not authentication. Anyone with access to this local app can switch demo users; do not use it with real personal information.
+- Personal memory is limited to one of two response styles. The app does not infer and save arbitrary facts from conversations.
