@@ -165,6 +165,8 @@ Replace the placeholders with your own values. The local MCP subprocess inherits
 
 ## Try the demo
 
+For the full scenario matrix, negative cases, and a record of which checks are automated, use [TEST_CASES.md](TEST_CASES.md). The steps below are a short walkthrough.
+
 Enter these fictional requests in the Streamlit app:
 
 - **Question:** `What remains outstanding before the Project Atlas pilot can launch?` Expected: three blockers from the current status, with source references. No task is created.
@@ -206,7 +208,7 @@ Start the app with the command in **Run locally**. **Fictional demo user** choos
 | 11. Compare the default | With Alex still selected, ask the *same* pilot-launch question from step 4. | **What internally happened** says no preference was saved and the answer used **Default prose (no saved preference)**. The answer uses short prose paragraphs instead of an action-only bullet list. The three project facts should stay the same. |
 | 12. Check task action | Enter `Create an internal task for the next open Project Atlas action.` and click **Send** twice. | **What internally happened** shows Knowledge Base retrieval, the model's MCP selection, the latest S3 status check, and whether DynamoDB created or reused the task. The page shows the IT sign-in task due **27 October 2026**. No email is sent. |
 | 13. Inspect caching | Ask the *same* pilot-launch question twice within a few minutes and compare **What internally happened** and the cache token counts in **How this request ran**. | The block says **Prompt cache hit** only when Bedrock reports cache-read tokens. A cache write means the prompt was stored for possible later reuse, not that this request was a hit. A repeat may show cache-read tokens; a hit is not guaranteed. |
-| 14. Inspect observability | After the pilot-launch question, expand **System level**, **RAG level**, **Answer level**, **Agent level**, and **Session rates and resource use** under **Observability**. Then inspect a memory-only request and a task request. | The question shows timing and tokens, the returned source scores, and Recall@5 for the labelled demo question. Citation-number checks do not claim factual accuracy. Reranker and judge metrics show N/A. Memory-only requests have no RAG/model metrics. The task path shows whether the existing task was returned; session rates use only this browser session. |
+| 14. Inspect observability | After the pilot-launch question, expand **System level**, **RAG level**, **Answer level**, **Agent level**, **Memory level**, and **Session rates and resource use** under **Observability**. Then inspect a memory-only request and a task request. | The question shows timing and tokens, the returned source scores, Recall@5 for the labelled demo question, and loaded memory counts. Citation-number checks do not claim factual accuracy. Reranker and judge metrics show N/A. Memory-only requests have no RAG/model metrics. The task path shows whether the existing task was returned; session rates use only this browser session. |
 
 Saving, inspecting, denying a text deletion, and deleting with the button do not invoke the model. Question and task steps use AWS services and may incur small charges. The model's exact wording can vary, so judge answers by the sourced facts and selected format rather than exact text. The fictional user selector is not authentication; use no real personal data.
 
