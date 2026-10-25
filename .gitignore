@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .env
+.env.local
 .streamlit/secrets.toml
 .DS_Store
 AGENTS.md

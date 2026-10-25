@@ -43,7 +43,7 @@ def model_cost_estimate(metrics: dict | None) -> tuple[float | None, str]:
     )
     return sum(count * rate for count, rate in zip(counts, rates)) / 1_000_000, (
         "Estimate from configured model token rates; excludes Knowledge Base, "
-        "S3 Vectors, S3, DynamoDB, and any future evaluator or reranker."
+        "S3 Vectors, S3, DynamoDB, AgentCore Memory, and any future evaluator or reranker."
     )
 
 
@@ -161,6 +161,15 @@ def build_report(
             "task_created": task_result.get("created") if task_result else None,
             "duplicate_avoided": metrics.get("duplicate_avoided") if metrics else None,
             "task_note": "Task recorded means created or returned; underlying work is not complete.",
+        },
+        "memory": {
+            "conversation_turns_loaded": metrics.get("conversation_turns_loaded") if metrics else None,
+            "episodes_loaded": metrics.get("episodes_loaded") if metrics else None,
+            "personal_facts_loaded": metrics.get("personal_facts_loaded") if metrics else None,
+            "personal_facts_learned": metrics.get("personal_facts_learned", []) if metrics else [],
+            "conversation_saved": metrics.get("conversation_saved") if metrics else None,
+            "conversation_save_error": metrics.get("conversation_save_error") if metrics else None,
+            "note": "Episode extraction is asynchronous; counts show records retrieved for this request.",
         },
     }
 

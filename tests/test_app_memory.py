@@ -31,6 +31,8 @@ class MemoryPageTests(unittest.TestCase):
         }]
         with (
             patch("memory_client.get_response_style", return_value="brief_actions"),
+            patch("memory_client.get_personal_facts", return_value=[]),
+            patch("memory_client.learn_personal_facts", return_value=[]),
             patch(
                 "agent_client.run_agent",
                 return_value=("- IT: test sign-in [1].", sources, None, metrics),
@@ -63,6 +65,8 @@ class MemoryPageTests(unittest.TestCase):
         del metrics["response_format"]
         with (
             patch("memory_client.get_response_style", return_value="brief_actions"),
+            patch("memory_client.get_personal_facts", return_value=[]),
+            patch("memory_client.learn_personal_facts", return_value=[]),
             patch(
                 "agent_client.run_agent",
                 return_value=("- IT: test sign-in [1].", sources, None, metrics),
@@ -95,6 +99,8 @@ class MemoryPageTests(unittest.TestCase):
 
         with (
             patch("memory_client.get_response_style", side_effect=get_style),
+            patch("memory_client.get_personal_facts", return_value=[]),
+            patch("memory_client.learn_personal_facts", return_value=[]),
             patch("memory_client.save_response_style", side_effect=save_style),
             patch("memory_client.delete_response_style", side_effect=delete_style) as delete_call,
             patch("agent_client.run_agent") as model_call,

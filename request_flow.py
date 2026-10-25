@@ -9,8 +9,19 @@ def model_flow_steps(user_name: str, metrics: dict, task_result: dict | None) ->
     else:
         memory_step = f"Checked DynamoDB for {user_name}; no response preference is saved."
 
-    steps = [
-        memory_step,
+    steps = [memory_step]
+    if metrics.get("conversation_turns_loaded") is not None:
+        steps.append(
+            f"Loaded {metrics['conversation_turns_loaded']} recent conversation turn(s) from AgentCore Memory."
+        )
+        steps.append(
+            f"Retrieved {metrics.get('episodes_loaded', 0)} relevant past episode(s) for this demo user."
+        )
+        steps.append(
+            f"Applied {metrics.get('personal_facts_loaded', 0)} saved personal fact(s); "
+            f"learned {len(metrics.get('personal_facts_learned', []))} from this request."
+        )
+    steps.extend([
         (
             "Retrieved "
             f"{metrics['retrieved_chunks']} passage(s) from "
@@ -18,7 +29,7 @@ def model_flow_steps(user_name: str, metrics: dict, task_result: dict | None) ->
             "through the Bedrock Knowledge Base."
         ),
         "Built a Bedrock prompt with those passages and a cache checkpoint.",
-    ]
+    ])
 
     read = metrics["cache_read_tokens"]
     written = metrics["cache_write_tokens"]
@@ -57,6 +68,10 @@ def model_flow_steps(user_name: str, metrics: dict, task_result: dict | None) ->
         else:
             steps.append("The MCP tool found the existing task in DynamoDB; no duplicate was created.")
 
+    if metrics.get("conversation_saved"):
+        steps.append("Saved this request and result to AgentCore conversation history.")
+    elif metrics.get("conversation_save_error"):
+        steps.append("Conversation save failed after the result was produced.")
     return steps
 
 
@@ -75,7 +90,7 @@ def model_flow_details(
         if "memory_style" in trace else "Not reported by this running app",
     }
     retrieval_detail = {
-        "query_sent_to_knowledge_base": request,
+        "query_sent_to_knowledge_base": trace.get("retrieval_query", request),
         "retrieved_passages": [
             {
                 "source_uri": source.get("location", {}).get("s3Location", {}).get("uri"),
@@ -102,13 +117,26 @@ def model_flow_details(
         "cache_write_input_tokens": metrics["cache_write_tokens"],
         "cache_reuse_percent": metrics["cache_reuse_pct"],
     }
+    memory_extras = []
+    if metrics.get("conversation_turns_loaded") is not None:
+        memory_extras = [
+            {"recent_turns": trace.get("conversation", [])},
+            {"retrieved_episodes": trace.get("episodes", [])},
+            {"saved_personal_facts": trace.get("personal_facts", []),
+             "learned_now": metrics.get("personal_facts_learned", [])},
+        ]
+    save_detail = []
+    if metrics.get("conversation_saved") or metrics.get("conversation_save_error"):
+        save_detail = [{"saved": metrics.get("conversation_saved", False),
+                        "error": metrics.get("conversation_save_error")}]
     if task_result is None:
         model_detail = {
             "stop_reason": trace.get("stop_reason", "Not reported"),
             "model_text": trace.get("model_text", "Not reported by this running app"),
             "response_format": metrics.get("response_format", "Not reported"),
         }
-        return [memory_detail, retrieval_detail, prompt_detail, cache_detail, model_detail]
+        return [memory_detail, *memory_extras, retrieval_detail, prompt_detail,
+                cache_detail, model_detail, *save_detail]
 
     tool_request = trace.get("tool_request")
     tool_result = trace.get("tool_result", task_result)
@@ -119,11 +147,11 @@ def model_flow_details(
         "action_id": task.get("action_id"),
     }
     return [
-        memory_detail,
+        memory_detail, *memory_extras,
         retrieval_detail,
         prompt_detail,
         cache_detail,
         {"model_tool_request": tool_request} if tool_request else None,
         source_detail,
-        {"MCP_tool_result": tool_result},
+        {"MCP_tool_result": tool_result}, *save_detail,
     ]

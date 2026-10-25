@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 
 import boto3
+from boto3.dynamodb.conditions import Key
 
 
 REGION = "ap-southeast-2"
@@ -92,3 +93,68 @@ def is_forget_command(request: str) -> bool:
         r"(?:please )?(?:forget|delete|remove) my (?:saved )?(?:response )?preferences?",
         normalized,
     ))
+
+
+def extract_personal_facts(request: str) -> dict[str, str]:
+    """Learn only explicit first-person, fictional work facts; never infer from questions."""
+    facts = {}
+    team = re.search(
+        r"\bI (?:work on|am on|belong to) the (IT|Product Operations|Workplace Operations) team\b",
+        request, re.IGNORECASE,
+    )
+    if team:
+        canonical = next(name for name in ("IT", "Product Operations", "Workplace Operations")
+                         if name.lower() == team.group(1).lower())
+        facts["team"] = canonical
+    role = re.search(
+        r"\b(?:my role is|I am an?|I'm an?) (Project Atlas coordinator|IT tester|pilot volunteer)\b",
+        request, re.IGNORECASE,
+    )
+    if role:
+        facts["role"] = role.group(1).lower()
+    return facts
+
+
+def get_personal_facts(user_id: str) -> list[dict]:
+    table = _table(user_id)
+    items = []
+    cursor = None
+    while True:
+        args = {"KeyConditionExpression": Key("user_id").eq(user_id) &
+                Key("memory_key").begins_with("fact#"), "ConsistentRead": True}
+        if cursor:
+            args["ExclusiveStartKey"] = cursor
+        page = table.query(**args)
+        items.extend(page.get("Items", []))
+        cursor = page.get("LastEvaluatedKey")
+        if not cursor:
+            return items
+
+
+def learn_personal_facts(user_id: str, request: str) -> list[dict]:
+    """Upsert facts stated by this user, on by default for the fictional demo."""
+    extracted = extract_personal_facts(request)
+    table = _table(user_id) if extracted else None
+    saved = []
+    for kind, value in extracted.items():
+        item = {
+            "user_id": user_id,
+            "memory_key": f"fact#{kind}",
+            "kind": kind,
+            "value": value,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "source": "explicit_first_person_demo_statement",
+        }
+        table.put_item(Item=item)
+        saved.append(item)
+    return saved
+
+
+def delete_personal_fact(user_id: str, kind: str) -> bool:
+    if kind not in {"team", "role"}:
+        raise ValueError("Unsupported personal fact type.")
+    response = _table(user_id).delete_item(
+        Key={"user_id": user_id, "memory_key": f"fact#{kind}"},
+        ReturnValues="ALL_OLD",
+    )
+    return "Attributes" in response

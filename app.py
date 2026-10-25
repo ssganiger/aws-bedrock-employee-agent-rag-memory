@@ -1,14 +1,19 @@
 import streamlit as st
+from uuid import uuid4
 from botocore.exceptions import BotoCoreError, ClientError
 
 from agent_client import run_agent
+from conversation_memory import configured as conversation_configured, recent_turns
 from memory_client import (
     DEMO_USERS,
     STYLES,
     delete_response_style,
+    delete_personal_fact,
+    get_personal_facts,
     get_response_style,
     is_forget_command,
     parse_remember_command,
+    learn_personal_facts,
     save_response_style,
 )
 from observability import build_report, session_summary
@@ -51,7 +56,7 @@ def show_performance(metrics: dict, task_result: dict | None) -> None:
 
     with st.expander("How this request ran"):
         timings = [
-            {"Stage": "Personal memory read", "Time": f"{metrics['memory_ms']} ms"},
+            {"Stage": "Memory read", "Time": f"{metrics['memory_ms']} ms"},
             {"Stage": "Knowledge Base retrieval", "Time": f"{metrics['retrieval_ms']} ms"},
             {
                 "Stage": "Bedrock model call, measured locally",
@@ -90,6 +95,14 @@ def show_performance(metrics: dict, task_result: dict | None) -> None:
                 if metrics["memory_loaded"] else "No preference saved."
             )
         )
+        st.write(
+            f"**Conversation:** {metrics.get('conversation_turns_loaded', 0)} recent turns, "
+            f"{metrics.get('episodes_loaded', 0)} episodes, "
+            f"{metrics.get('personal_facts_loaded', 0)} personal facts loaded."
+        )
+        if metrics.get("conversation_save_error"):
+            st.warning("The answer was produced, but saving conversation history failed: " +
+                       metrics["conversation_save_error"])
         if metrics["duplicate_avoided"]:
             st.write("**Task efficiency:** Existing task reused; no duplicate write.")
         st.caption(
@@ -174,6 +187,9 @@ def show_observability(report: dict, metrics: dict | None = None,
             "Application retry and loop counts exclude any retries inside the AWS SDK. "
             "Recording a task does not complete the underlying work."
         )
+    with st.expander("Memory level"):
+        st.json(report["memory"])
+        st.caption("Raw turns and episodes live in AgentCore; response style and supported personal facts live in DynamoDB.")
     with st.expander("Session rates and resource use"):
         summary = session_summary(history)
         st.write(f"**Transactions in this session:** {summary['transactions']}")
@@ -209,8 +225,33 @@ user_id = st.selectbox(
 )
 st.caption("This selector demonstrates memory separation. It is not sign-in or access control.")
 
+session_id = None
+if conversation_configured():
+    session_key = f"atlas_conversation_{user_id}"
+    session_id = st.query_params.get(session_key)
+    if not session_id:
+        session_id = uuid4().hex
+        st.query_params[session_key] = session_id
+    st.caption(f"Conversation ID: {session_id[:8]} (kept in this page URL)")
+    if st.button("New conversation"):
+        session_id = uuid4().hex
+        st.query_params[session_key] = session_id
+        st.rerun()
+    try:
+        previous_turns = recent_turns(user_id, session_id)
+    except Exception as error:
+        st.error(f"Conversation history is unavailable: {error}")
+        st.stop()
+    if previous_turns:
+        with st.expander(f"Conversation history ({len(previous_turns)} recent turns)"):
+            for turn in previous_turns:
+                st.write(f"**{turn['role'].title()}:** {turn['text']}")
+else:
+    st.caption("Conversation history is not configured. Set ATLAS_AGENTCORE_MEMORY_ID to enable it.")
+
 try:
     current_style = get_response_style(user_id)
+    current_facts = get_personal_facts(user_id)
 except Exception as error:
     st.error(f"Personal memory is unavailable: {error}")
     st.stop()
@@ -218,6 +259,15 @@ except Exception as error:
 with st.form("assistant_request"):
     request = st.text_area("Your request", height=100)
     submitted = st.form_submit_button("Send")
+learned = []
+if submitted and request.strip():
+    try:
+        learned = learn_personal_facts(user_id, request)
+        if learned:
+            current_facts = get_personal_facts(user_id)
+    except (BotoCoreError, ClientError) as error:
+        st.error(f"Could not save a personal fact: {error}")
+        st.stop()
 st.caption(
     "To save a style, type 'Remember that I prefer short updates' or "
     "'Remember that I prefer detailed explanations' above. "
@@ -252,6 +302,15 @@ if current_style:
             st.rerun()
         except (BotoCoreError, ClientError) as error:
             st.error(f"Could not forget personal memory: {error}")
+
+if current_facts:
+    st.subheader(f"Personal facts learned for {DEMO_USERS[user_id]}")
+    st.caption("Learned automatically from clear first-person statements. These are not Project Atlas status facts.")
+    for fact in current_facts:
+        st.write(f"**{fact['kind'].title()}:** {fact['value']}")
+        if st.button(f"Forget {fact['kind']} fact", key=f"forget_{user_id}_{fact['kind']}"):
+            delete_personal_fact(user_id, fact["kind"])
+            st.rerun()
 
 if submitted:
     if not request.strip():
@@ -318,10 +377,17 @@ if submitted:
                         {"user_id": user_id, "saved_style": current_style},
                         None,
                     ])
-                    st.info(
-                        f"I remember your response preference: {STYLES[current_style]}"
-                        if current_style else "I have no saved response preference for you."
+                    remembered = (
+                        f"Response preference: {STYLES[current_style]}."
+                        if current_style else "No response preference saved."
                     )
+                    if current_facts:
+                        remembered += " Personal facts: " + "; ".join(
+                            f"{fact['kind']} = {fact['value']}" for fact in current_facts
+                        ) + "."
+                    else:
+                        remembered += " No personal facts learned."
+                    st.info(remembered)
                     show_observability(build_report(request))
                 else:
                     flow_area = st.empty()
@@ -329,8 +395,13 @@ if submitted:
                     response_area = st.empty()
                     with st.spinner("Checking Project Atlas documents..."):
                         answer, sources, task_result, metrics = run_agent(
-                            request, on_text=response_area.markdown, user_id=user_id
+                            request, on_text=response_area.markdown, user_id=user_id,
+                            session_id=session_id, personal_facts=current_facts,
                         )
+                    if learned:
+                        metrics["personal_facts_learned"] = [
+                            {"kind": fact["kind"], "value": fact["value"]} for fact in learned
+                        ]
                     with flow_area.container():
                         show_request_flow(
                             model_flow_steps(DEMO_USERS[user_id], metrics, task_result),

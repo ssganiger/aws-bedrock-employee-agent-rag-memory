@@ -1,6 +1,6 @@
 # AWS Bedrock AI | Project Atlas Employee Assistant
 
-A fictional employee assistant that answers questions about a project pilot, remembers a user's response preference, and creates internal follow-up tasks. It demonstrates retrieval-augmented generation (RAG), persistent personal memory, Amazon Bedrock prompt caching, model-selected MCP tools, and duplicate-safe task creation with AWS services.
+A fictional employee assistant that answers questions about a project pilot, keeps conversation history, recalls selected past interactions, learns limited personal facts, remembers a response preference, and creates internal follow-up tasks. It demonstrates retrieval-augmented generation (RAG), Amazon Bedrock AgentCore Memory, prompt caching, model-selected MCP tools, and duplicate-safe task creation.
 
 Project Atlas, its documents, and its tasks are fictional. This is an independent portfolio project.
 
@@ -16,6 +16,7 @@ By building and running this project, you'll learn how to:
 6. **Measure the user experience and resource use:** Inspect total latency, time to first answer text (TTFT), approximate output rate, token usage, cache reuse, retrieval time, and tool time in the Streamlit app.
 7. **Build personal persistent memory:** Save, retrieve, update, and delete a fictional user's response preference in DynamoDB. Restart the app and switch demo users to verify persistence and separation.
 8. **Read an observability report:** Separate measured latency, token/cache usage, retrieval results, citations, tool outcomes, and session rates from cost estimates and quality evaluations that are not yet available.
+9. **Compare memory types:** Observe raw conversation turns, extracted episodes, personal facts, response preferences, and short-lived Bedrock prompt caching as separate mechanisms.
 
 The end result is a small employee assistant that answers from project documents and takes one controlled action. The **Try the demo** and **What to inspect while learning** sections below give you requests to run and code paths to explore.
 
@@ -28,7 +29,23 @@ The end result is a small employee assistant that answers from project documents
 5. Reads the latest dated Project Atlas status document from S3, selects the earliest due open action, and creates or returns its internal DynamoDB task.
 6. Shows whether the task was newly created or already existed.
 7. Streams question answers and displays per-request latency, TTFT, token throughput, prompt cache usage, and resource counts.
-8. Stores one controlled response-style preference per fictional demo user in a separate DynamoDB table. The preference changes answer format, while project facts still come from retrieved documents.
+8. Stores one controlled response-style preference and explicitly stated demo-user facts in a separate DynamoDB table. These can personalize the response, while project facts still come from retrieved documents.
+9. Stores conversation turns in AgentCore Memory and retrieves relevant past episodes across conversations. Episode extraction is asynchronous, so a new episode may not be available immediately.
+
+## Where each kind of memory lives
+
+| Information | AWS or app location | Scope and lifetime | How the app uses it |
+| --- | --- | --- | --- |
+| Current request and retrieved passages | Streamlit/Python process and Bedrock request | One request | Working context sent to Nova 2 Lite; not a personal memory record. |
+| Conversation history | AgentCore Memory short-term events in Sydney | One fictional user and conversation ID; this demo configures **7-day** raw-event retention | Reloads recent turns for follow-up questions. The conversation ID is kept in the page URL. |
+| Episodic memory | AgentCore Memory episodic records in an actor-scoped namespace | One fictional user, across conversations; separate from the 7-day raw-event setting | Retrieves compact past interactions, including task tool outcomes. Extraction is asynchronous; an episode may not appear immediately. |
+| Personal facts | DynamoDB `project-atlas-memory`, keys `user_id` and `fact#team` or `fact#role` | One fictional user, until its **Forget fact** button is used | Automatically saves only clear first-person statements about a supported demo team or role. Questions about other people are not learned as personal facts. |
+| Response preference | DynamoDB `project-atlas-memory`, key `response_style` | One fictional user, until **Forget saved preference** is used | Changes answer format only. |
+| Project knowledge | S3 Markdown documents and the Bedrock Knowledge Base S3 Vectors index | Shared Project Atlas corpus, until updated/deleted | Current evidence for project facts; a new source sync updates the index. |
+| Internal task | DynamoDB `project-atlas-actions` | Shared demo action ID, until table/item deletion | Records a created or previously existing task. It does not mean the work is complete. |
+| Model prompt cache | Bedrock-managed cache | Short-lived eligible prompt prefix | May reuse input tokens. It is not conversation or personal memory, and the app cannot inspect its stored contents. |
+
+Alex and Taylor have different AgentCore actor IDs and DynamoDB partition keys. The fictional user selector is **not authentication**. A remembered episode cannot override the latest S3 status or authorize a new task; only the current explicit request can trigger the task tool.
 
 ## Architecture
 
@@ -38,9 +55,11 @@ flowchart LR
     B --> C[S3 Vectors index]
     D[Employee request in Streamlit] --> E[Retrieve relevant passages]
     D --> M[Read or manage personal memory in DynamoDB]
+    D --> N[AgentCore conversation history and episodes]
     B --> E
     E --> F[Nova 2 Lite with cache checkpoint]
     M --> F
+    N --> F
     F -->|Question| G[Answer with source references]
     F -->|Explicit task request| H[Python validates tool request]
     H --> I[Local MCP server]
@@ -49,7 +68,7 @@ flowchart LR
     K --> L[Show created or existing task]
 ```
 
-The question path uses RAG: the Knowledge Base retrieves passages, and Nova 2 Lite produces an answer grounded in them. A separate DynamoDB table stores only a response-format preference for each fictional user. The app reads that preference before answering and places it after the Bedrock cache checkpoint. Explicit memory commands use DynamoDB directly, without a Knowledge Base or model call. The task path uses a local MCP tool. Task creation reads the current status directly from S3, so it does not rely on a possibly stale retrieved passage. A conditional DynamoDB write prevents duplicates for the same action ID. The app does not email employees or mark the underlying work complete.
+The question path uses RAG: the Knowledge Base retrieves passages, and Nova 2 Lite produces an answer grounded in them. AgentCore stores raw conversation events and extracts episodes; DynamoDB stores the controlled response style and supported personal facts. Conversation, episodes, facts, and style are placed after the Bedrock cache checkpoint. The task path uses a local MCP tool. Task creation reads the current status directly from S3, so it does not rely on a possibly stale memory or retrieved passage. A conditional DynamoDB write prevents duplicates. The app does not email employees or mark the underlying work complete.
 
 ## Components
 
@@ -64,7 +83,8 @@ The question path uses RAG: the Knowledge Base retrieves passages, and Nova 2 Li
 | Bedrock prompt caching | Makes a stable input prefix eligible for reuse |
 | Local MCP Python server and client | Exposes the internal task action |
 | Amazon DynamoDB action table | Stores tasks using duplicate-safe conditional writes |
-| Amazon DynamoDB memory table | Stores one response-style preference per fictional user |
+| Amazon DynamoDB memory table | Stores response style and limited personal facts per fictional user |
+| AgentCore Memory | Stores conversation events and extracts past episodes by fictional user |
 
 The Python clients use `ap-southeast-2` (Sydney). Nova 2 Lite uses a global inference profile, which may route inference outside Sydney. Use fictional data for this demonstration.
 
@@ -111,7 +131,15 @@ Keep AWS credentials out of the repository.
      --profile YOUR_AWS_PROFILE --region ap-southeast-2
    ```
 
-Wait until both tables are `ACTIVE`. The AWS profile needs permission to retrieve from the Knowledge Base, invoke Nova 2 Lite, read the source S3 objects, and read/write both DynamoDB tables.
+5. Create the AgentCore Memory for conversation history and episodes in Sydney:
+
+   ```bash
+   AWS_PROFILE=YOUR_AWS_PROFILE python setup_agentcore_memory.py
+   ```
+
+   The script reuses a resource with the same demo name if it already exists. Record the **Memory ID** and **Episodic strategy ID** it prints. Wait until both statuses are `ACTIVE`. The script configures seven-day retention for raw events and actor-scoped episodic records. AgentCore Memory has its own charges; inspect [AgentCore pricing](https://aws.amazon.com/bedrock/agentcore/pricing/) for your account before extended testing.
+
+Wait until both DynamoDB tables are `ACTIVE`. The AWS profile needs permission to retrieve from the Knowledge Base, invoke Nova 2 Lite, read the source S3 objects, read/write both DynamoDB tables, and create/list/retrieve AgentCore Memory events and records. Resource creation additionally requires AgentCore Memory control-plane permissions.
 
 ## Run locally
 
@@ -128,10 +156,12 @@ BEDROCK_KNOWLEDGE_BASE_ID=YOUR_KNOWLEDGE_BASE_ID \
 ATLAS_SOURCE_BUCKET=YOUR_SOURCE_BUCKET \
 ATLAS_ACTIONS_TABLE=project-atlas-actions \
 ATLAS_MEMORY_TABLE=project-atlas-memory \
+ATLAS_AGENTCORE_MEMORY_ID=YOUR_AGENTCORE_MEMORY_ID \
+ATLAS_EPISODIC_STRATEGY_ID=YOUR_EPISODIC_STRATEGY_ID \
 python -m streamlit run app.py
 ```
 
-Replace the placeholders with your own values. The local MCP subprocess inherits these environment variables. The S3 source bucket and DynamoDB table names are configurable; the Python code currently fixes the AWS Region to Sydney.
+Replace the placeholders with your own values. The local MCP subprocess inherits these environment variables. The S3 source bucket and DynamoDB table names are configurable; the Python code currently fixes the AWS Region to Sydney. The two AgentCore variables enable conversation history and episodic retrieval. Without them the older RAG and task paths still work, but no conversation history is stored.
 
 ## Try the demo
 
@@ -140,8 +170,22 @@ Enter these fictional requests in the Streamlit app:
 - **Question:** `What remains outstanding before the Project Atlas pilot can launch?` Expected: three blockers from the current status, with source references. No task is created.
 - **Task:** `Create an internal task for the next open Project Atlas action.` Expected: an IT task for testing sign-in for the remaining 12 volunteers, due 27 October 2026. If that task is absent, the request creates it. If it already exists, the app returns it and says no duplicate was created.
 - **Memory:** Select fictional user Alex Morgan and enter `Remember that I prefer short updates with blockers, owners, and due dates.` Expected: the saved style appears under **Saved preferences for Alex Morgan**. Ask the question above; its answer should use a short action-oriented format while keeping source references. Restart the app and confirm Alex's style remains. Switch to Taylor Chen and confirm Taylor has no style. Click **Forget saved preference** for Alex when you want to remove it.
+- **Conversation:** Ask the pilot-launch question, then ask `Which of those actions is due on 28 October?` in the same conversation. The follow-up should identify the Workplace Operations approval action using recent context.
+- **Personal fact:** With Alex selected, send `I work on the IT team. What remains outstanding for Project Atlas?` The app automatically saves `team = IT` and displays it under **Personal facts learned for Alex Morgan**. Ask `What do you remember about me?` to inspect it. A question such as `Who works on the IT team?` does not create a personal fact. Use **Forget team fact** to remove it.
+- **Episode:** Ask for an internal task in one conversation, then click **New conversation** and ask what happened during the earlier task request. AgentCore may need time to produce an episode. Inspect **What internally happened** to see whether an episode was retrieved; do not treat a missing episode immediately after a request as a failed save.
 
-The memory path accepts explicit `Remember that I prefer ...` requests for a short or detailed style. Sending that request saves the preference immediately; there is no separate Save button. It stores a controlled style value, not arbitrary instructions. `What do you remember about me?` shows the saved preference without a model call. The **Saved preferences** section appears below **Your request** only when the selected user has a saved style. It is a read-only view; **Forget saved preference** is the only deletion control in the app. A typed request such as `Forget my response preference` is denied by an application rule, with a message directing the user to the button; it never deletes data or calls the model. This is a Python application policy, not an Amazon Bedrock Guardrails resource. The current task path accepts explicit requests beginning with `create ` or `please create ` and containing `task`. The latest dated status document must contain action IDs, owner teams, and due dates in the format shown in `knowledge/project-atlas-status.md`.
+The preference path accepts explicit `Remember that I prefer ...` requests for a short or detailed style. Sending that request saves the preference immediately; there is no separate Save button. `What do you remember about me?` shows the saved preference and supported personal facts without a model call. The **Saved preferences** section appears below **Your request** only when the selected user has a saved style. **Forget saved preference** is its only deletion control. A typed request such as `Forget my response preference` is denied by an application rule. Personal-fact learning is **on by default** and deliberately limited to clear first-person statements about the three supported demo teams and three supported roles. The app does not infer identity from a question or extract arbitrary sensitive details. Learned facts are shown with individual Forget buttons. The current task path accepts explicit requests beginning with `create ` or `please create ` and containing `task`. The latest dated status document must contain action IDs, owner teams, and due dates in the format shown in `knowledge/project-atlas-status.md`.
+
+### Test conversation and episodic memory
+
+1. Select **Alex Morgan**, click **New conversation**, and ask `What remains outstanding before the Project Atlas pilot can launch?` The page should show a conversation ID and, after the response, saved USER and ASSISTANT turns. The flow shows how many recent turns and episodes were loaded.
+2. In the same conversation, ask `Which of those actions is due on 28 October?` The answer should identify Workplace Operations and its Sydney office-information approval. The retrieval query shown in **Step details** includes the preceding question to help resolve the short follow-up.
+3. Ask `Create an internal task for the next open Project Atlas action.` The app saves the USER request, MCP TOOL outcome, and ASSISTANT result as conversation events. A later informational request cannot repeat the task action merely because it appears in history.
+4. Click **New conversation**. Ask `What happened when I requested the next Project Atlas task earlier?` Check the episode count and episode text in **What internally happened**. AgentCore extracts episodes asynchronously, so retry later if the count is zero. Current project status must still come from the source documents.
+5. Switch to **Taylor Chen**. Taylor's conversation history and episode retrieval must not include Alex's turns. Switch back to Alex to continue the conversation identified in Alex's page URL.
+6. With Alex selected, ask `I work on the IT team. What remains outstanding for Project Atlas?` Confirm the **Personal facts learned for Alex Morgan** panel shows **Team: IT**. Ask `What do you remember about me?`, then click **Forget team fact**. Taylor's facts must remain separate.
+
+Use fictional text only. The app shows only the last eight conversation turns in model context; AgentCore retains raw events for seven days under this demo resource. Deleting a DynamoDB fact does not delete the original conversation sentence, so avoid putting real personal information into this learning app.
 
 ## Manual end-to-end test script
 
@@ -176,7 +220,7 @@ The approximate output rate divides Bedrock's output-token count by the locally 
 
 The **How this request ran** expander shows personal-memory read time, retrieval time, local model-call time, Bedrock-reported model latency, optional MCP task time, uncached input tokens, cache-read and cache-write tokens, output tokens, retrieved chunks, distinct source documents, and call counts. Cache reuse is `cache-read tokens / (uncached input + cache-read + cache-write tokens)`. A cache write is not a cache hit; repeat an identical question soon afterward to observe a possible cache read. [AWS documents](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html) the usage fields and cache eligibility rules.
 
-For every **Send**, **What internally happened** appears above the result with short bullets in the order the request was handled. Memory commands show their direct DynamoDB path. Questions show memory lookup, RAG retrieval, prompt caching activity reported by Bedrock, and the answer format applied. Task requests also show the MCP tool and whether the task was created or reused. The block describes the observed request; it does not label a cache write as a hit. The detailed token counts remain in **How this request ran**.
+For every **Send**, **What internally happened** appears above the result with short bullets in the order the request was handled. Memory commands show their direct DynamoDB path. Questions show preference lookup, recent conversation turns, retrieved episodes, saved and newly learned personal facts, RAG retrieval, prompt caching activity reported by Bedrock, and the answer format applied. Task requests also show the MCP tool and whether the task was created or reused. The block describes the observed request; it does not label a cache write as a hit. The detailed token counts remain in **How this request ran**.
 
 Expand **Step 1 details**, **Step 2 details**, and so on to inspect the applicable data behind each bullet. A question can show the selected user's saved style, the actual retrieved passage text and S3 source URI, the complete ConverseStream request assembled by the app (including the source text, format directive, user request, and cache checkpoint), Bedrock's cache token counts, and the returned answer. A task request also shows the model-selected MCP tool call and the structured task result. Memory-only requests show their parsed command and DynamoDB item or lookup result. These details are displayed for the current request in the local page; the app does not write a trace file. Bedrock manages the prompt cache on its server side, so its stored cache contents are not available to inspect here. Use only fictional data in this learning app because the expanded model request includes the text sent to Bedrock.
 
@@ -190,21 +234,21 @@ For informational answers, the app uses visibly different response formats: a sa
 - **Prompt caching:** `agent_client.py` places a `cachePoint` after the retrieved context. Compare cache-write tokens on an eligible first call with cache-read tokens on a repeated call in the page's performance expander. A cache hit is not guaranteed. See [AWS prompt caching documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html).
 - **Streaming and TTFT:** `agent_client.py` timestamps the first nonempty `contentBlockDelta` text event from `ConverseStream`. The stream's final metadata supplies token usage and Bedrock latency. See the [Nova streaming guide](https://docs.aws.amazon.com/nova/latest/nova2-userguide/streaming-responses.html).
 - **MCP and actions:** `mcp_server.py` exposes the tools; `mcp_actions_client.py` calls the task tool; `action_workflow.py` parses the latest S3 status; and `actions_client.py` creates or retrieves the DynamoDB task.
-- **Persistent memory:** `memory_client.py` reads and writes the `response_style` item keyed by fictional user ID. `app.py` lets you save, inspect, and forget it. `agent_client.py` reads it on each question and puts it after the cache checkpoint so a changed preference does not alter the earlier cached prefix. Project status is always grounded in retrieved documents.
+- **Persistent memory:** `memory_client.py` reads and writes the `response_style` item and supported personal facts keyed by fictional user ID. `conversation_memory.py` stores raw AgentCore events and retrieves episodes. `agent_client.py` puts these after the cache checkpoint so a changed memory does not alter the earlier cached prefix. Project status remains grounded in retrieved documents.
 
 ## Observability in the app
 
-Every **Send** shows an **Observability** section. The system group keeps the existing backend timings, TTFT or first tool event, token counts, approximate output rate, and prompt-cache usage. The RAG group lists returned chunks, source URIs and Bedrock retrieval scores. The answer group checks whether numeric citation references point to returned sources. The agent group shows model/tool calls, task creation versus reuse, application retries and loop count. Session rates show errors, known retrieval outcomes and tool successes for requests in the current Streamlit browser session only; they are not account-wide production statistics.
+Every **Send** shows an **Observability** section. The system group keeps the existing backend timings, TTFT or first tool event, token counts, approximate output rate, and prompt-cache usage. The RAG group lists returned chunks, source URIs and Bedrock retrieval scores. The answer group checks whether numeric citation references point to returned sources. The agent group shows model/tool calls, task creation versus reuse, application retries and loop count. The memory group shows conversation turns, episodes and personal facts loaded or learned, plus the conversation-write outcome. Session rates show errors, known retrieval outcomes and tool successes for requests in the current Streamlit browser session only; they are not account-wide production statistics.
 
 A retrieval score is not proof of relevance. **Recall@K** is shown only for the exact fictional launch-readiness question in the small labelled demo set, where `project-atlas-status.md` is the expected document. Other questions show N/A until they have labelled relevant documents. If a request fails before retrieval returns, retrieval outcome is unknown rather than counted as a failure. Reranker score is N/A because no reranker is configured. Faithfulness, groundedness, answer relevance, context relevance and hallucination rate are N/A until an evaluator is installed; citation syntax checks cannot substitute for factual evaluation. A memory-only request has no RAG or model metrics. Tool completion means the correct internal task was created or returned, not that the underlying work was completed.
 
-**Cost is optional and explicitly estimated.** Set all four environment variables to your current Nova 2 Lite USD prices *per million tokens* for Sydney: `ATLAS_INPUT_USD_PER_MILLION`, `ATLAS_OUTPUT_USD_PER_MILLION`, `ATLAS_CACHE_READ_USD_PER_MILLION`, and `ATLAS_CACHE_WRITE_USD_PER_MILLION`. The page then estimates the model inference portion using uncached input, output, cache-read and cache-write tokens. It excludes Knowledge Base retrieval, S3 Vectors, S3, DynamoDB, and evaluation services. If prices are not configured, it shows N/A rather than inventing a rate. Check the current [AWS Bedrock pricing page](https://aws.amazon.com/bedrock/pricing/) before setting values. This app does not store transaction traces beyond the current browser session.
+**Cost is optional and explicitly estimated.** Set all four environment variables to your current Nova 2 Lite USD prices *per million tokens* for Sydney: `ATLAS_INPUT_USD_PER_MILLION`, `ATLAS_OUTPUT_USD_PER_MILLION`, `ATLAS_CACHE_READ_USD_PER_MILLION`, and `ATLAS_CACHE_WRITE_USD_PER_MILLION`. The page then estimates the model inference portion using uncached input, output, cache-read and cache-write tokens. It excludes Knowledge Base retrieval, S3 Vectors, S3, DynamoDB, AgentCore Memory, and evaluation services. If prices are not configured, it shows N/A rather than inventing a rate. Check the current [AWS Bedrock pricing page](https://aws.amazon.com/bedrock/pricing/) before setting values. The app stores conversation events and episodes in AgentCore; it does not write observability trace files.
 
 ## Cost and cleanup
 
-This demo can incur charges for model inference, embeddings and ingestion, S3 Vectors, S3 storage and requests, and DynamoDB operations. Cache writes and reads can have different rates from uncached model input. Review current [Bedrock pricing](https://aws.amazon.com/bedrock/pricing/), [S3 pricing](https://aws.amazon.com/s3/pricing/), and [DynamoDB pricing](https://aws.amazon.com/dynamodb/pricing/) for your Region and account before extended use. AWS credits and eligibility vary by account.
+This demo can incur charges for model inference, embeddings and ingestion, S3 Vectors, S3 storage and requests, DynamoDB operations, and AgentCore Memory event storage/retrieval and episode extraction. Cache writes and reads can have different rates from uncached model input. Review current [Bedrock pricing](https://aws.amazon.com/bedrock/pricing/), [AgentCore pricing](https://aws.amazon.com/bedrock/agentcore/pricing/), [S3 pricing](https://aws.amazon.com/s3/pricing/), and [DynamoDB pricing](https://aws.amazon.com/dynamodb/pricing/) for your Region and account before extended use. AWS credits and eligibility vary by account.
 
-When finished, remove the demo Knowledge Base and its vector resources, source S3 objects and bucket, and both DynamoDB tables through the AWS console. Check the resource lists and billing page afterward; deleting the Knowledge Base may not remove every associated resource.
+When finished, remove the demo Knowledge Base and its vector resources, source S3 objects and bucket, both DynamoDB tables, and `ProjectAtlasEmployeeDemoMemory` in AgentCore Memory through the AWS console. Check the resource lists and billing page afterward; deleting the Knowledge Base may not remove every associated resource.
 
 ## Limits
 
@@ -213,4 +257,4 @@ When finished, remove the demo Knowledge Base and its vector resources, source S
 - The action parser expects the documented status format. It does not accept arbitrary prose or automatically close tasks when a newer status changes.
 - Creating a task does not mean the underlying action is complete.
 - The fictional user selector is for learning, not authentication. Anyone with access to this local app can switch demo users; do not use it with real personal information.
-- Personal memory is limited to one of two response styles. The app does not infer and save arbitrary facts from conversations.
+- Response style is limited to two controlled choices. Automatic personal-fact learning accepts only explicit statements about the supported demo teams and roles; it does not infer arbitrary facts or provide a general personal-profile extractor.
